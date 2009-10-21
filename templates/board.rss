@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0">
+<channel>
+    <title>2ch: {{board|escape}}</title>
+    <link>http://{{server}}/test/read.cgi/{{board}}/</link>
+    <description>2ch: {{board|escape}}</description>
+    <language>ja</language>
+    <pubDate>{{lastmodified}}</pubDate>
+    {% for item in items %}
+        <item>
+            <title>{{item.title|escape}}</title>
+            <link>http://{{server}}/test/read.cgi/{{board}}/{{item.thread}}</link>
+            <guid isPermaLink="true">http://{{server}}/test/read.cgi/{{board}}/{{item.thread}}/</guid>
+        </item>
+    {% endfor %}
+</channel>
+</rss>
+

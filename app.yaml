@@ -1,0 +1,11 @@
+application: te18st
+version: 1
+runtime: python
+api_version: 1
+
+handlers:
+- url: /clean
+  script: main.py
+  login: admin
+- url: /.*
+  script: main.py

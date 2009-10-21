@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0">
+<channel>
+    <title>2ch: {{title|escape}}</title>
+    <link>http://{{server}}/test/read.cgi/{{board}}/{{thread}}/</link>
+    <description>2ch: {{title|escape}}</description>
+    <language>ja</language>
+    <pubDate>{{lastmodified}}</pubDate>
+    {% for item in items %}
+        <item>
+            <title>{{item.num}}</title>
+            <link>http://{{server}}/test/read.cgi/{{board}}/{{thread}}/{{item.num}}</link>
+            <guid isPermaLink="true">http://{{server}}/test/read.cgi/{{board}}/{{thread}}/{{item.num}}</guid>
+            <pubDate>{{item.date}}</pubDate>
+            <description><![CDATA[
+                {% if config.thread_show_head %}
+                    {% ifequal item.mail "" %}
+                        {{item.num}} 名前：<b>{{item.name|escape}}</b> ：{{item.dd|escape}}
+                    {% else %}
+                        {{item.num}} 名前：<a href="mailto:{{item.mail|escape}}"><b>{{item.name|escape}}</b></a> ：{{item.dd|escape}}
+                    {% endifequal %}
+                {% endif %}
+                <p>{{item.body}}</p>
+            ]]></description>
+        </item>
+    {% endfor %}
+</channel>
+</rss>
+
