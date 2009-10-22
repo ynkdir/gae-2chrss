@@ -1,5 +1,6 @@
+# coding: utf-8
+
 from google.appengine.ext import webapp
-from google.appengine.ext.webapp import template
 from google.appengine.ext.webapp.util import run_wsgi_app
 from google.appengine.ext import db
 from google.appengine.api import urlfetch
@@ -9,7 +10,8 @@ import re
 import os
 import os.path
 import datetime
-from xml.sax.saxutils import unescape
+from xml.sax.saxutils import unescape, escape
+import StringIO
 
 import config
 
@@ -19,6 +21,9 @@ class UrlCache(db.Model):
     lastmodified = db.DateTimeProperty()
     lastaccess = db.DateTimeProperty()
     rss = db.BlobProperty()
+
+def escapeattr(s):
+    return escape(s, {'"':'&quot;'})
 
 def geturl(url, f_2rss):
     key_name = "uc_" + url
@@ -40,24 +45,14 @@ def geturl(url, f_2rss):
         uc.content = db.Blob(res.content)
         uc.lastmodified = lastmodified
         uc.lastaccess = datetime.datetime.utcnow()
-        uc.rss = f_2rss(uc)
+        uc.rss = db.Blob(f_2rss(uc))
         uc.put()
-    elif res.status_code == 304 and uc:
-        uc.lastaccess = datetime.datetime.utcnow()
-        uc.put()
+    elif res.status_code == 304:
+        pass
     else:
         raise Exception("BadResponse")
 
     return uc
-
-def render(template_file, template_values):
-    path = os.path.join(os.path.dirname(__file__), "templates", template_file)
-    return template.render(path, template_values)
-
-class AIndex(webapp.RequestHandler):
-    def get(self):
-        template_values = {'root': self.request.url}
-        self.response.out.write(render("index.html", template_values))
 
 class AClean(webapp.RequestHandler):
     def get(self):
@@ -72,19 +67,19 @@ class AThreadRss(webapp.RequestHandler):
                 or not re.match(config.filter_board, board)
                 or not re.match(r"^\d+$", thread)):
             raise Exception("Validate")
-        key = "%s%s%s" % (server, board, thread)
-        rss = memcache.get(key)
+        url = "http://%s/%s/dat/%s.dat" % (server, board, thread)
+        rss = memcache.get(url)
         if rss == "error":
             raise Exception("CachedError")
         if rss is None:
             try:
-                url = "http://%s/%s/dat/%s.dat" % (server, board, thread)
                 f_2rss = lambda uc: self.dat2rss(server, board, thread, uc.content.decode("cp932"), uc.lastmodified)
                 uc = geturl(url, f_2rss)
                 rss = uc.rss
-                memcache.add(key, rss, time=config.thread_cache_time)
+                rss = self.dat2rss(server, board, thread, uc.content.decode("cp932"), uc.lastmodified)
+                memcache.add(url, rss, time=config.thread_cache_time)
             except:
-                memcache.add(key, "error", time=config.error_cache_time)
+                memcache.add(url, "error", time=config.error_cache_time)
                 raise
         self.response.headers["Content-Type"] = "application/rss+xml"
         self.response.out.write(rss)
@@ -141,16 +136,34 @@ class AThreadRss(webapp.RequestHandler):
         items.reverse()
         if config.thread_max_items > 0:
             items = items[ : config.thread_max_items]
-        template_values = {
-            'config' : config,
-            'server' : server,
-            'board' : board,
-            'thread' : thread,
-            'title' : title,
-            'lastmodified' : lastmodified.strftime("%a, %d %b %Y %H:%M:%S GMT"),
-            'items' : items,
-        }
-        return render("thread.rss", template_values)
+
+        f = StringIO.StringIO()
+        f.write('<?xml version="1.0" encoding="utf-8"?>')
+        f.write('<rss version="2.0">')
+        f.write('<channel>')
+        f.write('<title>2ch: %s</title>' % escape(title))
+        f.write('<link>http://%s/test/read.cgi/%s/%s/</link>' % (server, board, thread))
+        f.write('<description>2ch: %s</description>' % escape(title))
+        f.write('<language>ja</language>')
+        f.write('<pubDate>%s</pubDate>' % lastmodified.strftime("%a, %d %b %Y %H:%M:%S GMT"))
+        for item in items:
+            f.write('<item>')
+            f.write('<title>%s</title>' % item['num'])
+            f.write('<link>http://%s/test/read.cgi/%s/%s/%s</link>' % (server, board, thread, item['num']))
+            f.write('<guid isPermaLink="true">http://%s/test/read.cgi/%s/%s/%s</guid>' % (server, board, thread, item['num']))
+            f.write('<pubDate>%s</pubDate>' % item['date'])
+            f.write('<description><![CDATA[')
+            if config.thread_show_head:
+                if item['mail'] == '':
+                    f.write(u'%s 名前：<b>%s</b> ：%s' % (item['num'], escape(item['name']), escape(item['dd'])))
+                else:
+                    f.write(u'%s 名前：<a href="mailto:%s"><b>%s</b></a> ：%s' % (item['num'], escapeattr(item['mail']), escape(item['name']), escape(item['dd'])))
+            f.write('<p>%s</p>' % item['body'])
+            f.write(']]></description>')
+            f.write('</item>')
+        f.write('</channel>')
+        f.write('</rss>')
+        return f.getvalue().encode('utf-8')
 
 
 class ABoardRss(webapp.RequestHandler):
@@ -158,19 +171,18 @@ class ABoardRss(webapp.RequestHandler):
         if (not re.match(config.filter_server, server)
                 or not re.match(config.filter_board, board)):
             raise Exception("Validate")
-        key = "%s%s" % (server, board)
-        rss = memcache.get(key)
+        url = "http://%s/%s/subject.txt" % (server, board)
+        rss = memcache.get(url)
         if rss == "error":
             raise Exception("CachedError")
         if rss is None:
             try:
-                url = "http://%s/%s/subject.txt" % (server, board)
                 f_2rss = lambda uc: self.subject2rss(server, board, uc.content.decode("cp932"), uc.lastmodified)
                 uc = geturl(url, f_2rss)
                 rss = uc.rss
-                memcache.add(key, rss, time=config.board_cache_time)
+                memcache.add(url, rss, time=config.board_cache_time)
             except:
-                memcache.add(key, "error", time=config.error_cache_time)
+                memcache.add(url, "error", time=config.error_cache_time)
                 raise
         self.response.headers["Content-Type"] = "application/rss+xml"
         self.response.out.write(rss)
@@ -189,18 +201,28 @@ class ABoardRss(webapp.RequestHandler):
         items.sort(key = lambda x: int(x["thread"]), reverse=True)
         if config.board_max_items > 0:
             items = items[ : config.board_max_items]
-        template_values = {
-            'config' : config,
-            'server' : server,
-            'board' : board,
-            'lastmodified' : lastmodified.strftime("%a, %d %b %Y %H:%M:%S GMT"),
-            'items' : items,
-        }
-        return render("board.rss", template_values)
+
+        f = StringIO.StringIO()
+        f.write('<?xml version="1.0" encoding="utf-8"?>')
+        f.write('<rss version="2.0">')
+        f.write('<channel>')
+        f.write('<title>2ch: %s</title>' % escape(board))
+        f.write('<link>http://%s/test/read.cgi/%s/</link>' % (server, board))
+        f.write('<description>2ch: %s</description>' % escape(board))
+        f.write('<language>ja</language>')
+        f.write('<pubDate>%s</pubDate>' % lastmodified.strftime("%a, %d %b %Y %H:%M:%S GMT"))
+        for item in items:
+            f.write('<item>')
+            f.write('<title>%s</title>' % escape(item['title']))
+            f.write('<link>http://%s/test/read.cgi/%s/%s/</link>' % (server, board, item['thread']))
+            f.write('<guid isPermaLink="true">http://%s/test/read.cgi/%s/%s/</guid>' % (server, board, item['thread']))
+            f.write('</item>')
+        f.write('</channel>')
+        f.write('</rss>')
+        return f.getvalue().encode('utf-8')
 
 application = webapp.WSGIApplication(
-    [('/', AIndex),
-     ('/clean', AClean),
+    [('/clean', AClean),
      ('/(.+)/(.+)/(.+)/', AThreadRss),
      ('/(.+)/(.+)/', ABoardRss),
     ],

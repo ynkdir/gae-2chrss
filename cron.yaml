@@ -1,4 +1,4 @@
 cron:
 - description: clean old data
   url: /clean
-  schedule: every 1 hours
+  schedule: every 24 hours
