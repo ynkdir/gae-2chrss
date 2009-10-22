@@ -1,4 +1,5 @@
 debug = False
+disable_cache = False
 filter_server = '^\w+\.2ch\.net$'
 filter_board = '^.*$'
 thread_max_items = 300

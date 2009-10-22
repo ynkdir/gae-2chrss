@@ -30,8 +30,9 @@ def geturl(url, f_2rss):
     uc = UrlCache.get_by_key_name(key_name)
 
     headers = {}
-    if uc:
-        headers["if-modified-since"] = uc.lastmodified.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    if not config.disable_cache:
+        if uc:
+            headers["if-modified-since"] = uc.lastmodified.strftime("%a, %d %b %Y %H:%M:%S GMT")
     res = urlfetch.fetch(url=url, headers=headers, follow_redirects=False)
 
     if "last-modified" in res.headers:
@@ -69,6 +70,8 @@ class AThreadRss(webapp.RequestHandler):
             raise Exception("Validate")
         url = "http://%s/%s/dat/%s.dat" % (server, board, thread)
         rss = memcache.get(url)
+        if config.disable_cache:
+            rss = None
         if rss == "error":
             raise Exception("CachedError")
         if rss is None:
@@ -172,6 +175,8 @@ class ABoardRss(webapp.RequestHandler):
             raise Exception("Validate")
         url = "http://%s/%s/subject.txt" % (server, board)
         rss = memcache.get(url)
+        if config.disable_cache:
+            rss = None
         if rss == "error":
             raise Exception("CachedError")
         if rss is None:
