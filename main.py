@@ -30,9 +30,8 @@ def geturl(url, f_2rss):
     uc = UrlCache.get_by_key_name(key_name)
 
     headers = {}
-    if not config.disable_cache:
-        if uc:
-            headers["if-modified-since"] = uc.lastmodified.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    if uc:
+        headers["if-modified-since"] = uc.lastmodified.strftime("%a, %d %b %Y %H:%M:%S GMT")
     res = urlfetch.fetch(url=url, headers=headers, follow_redirects=False)
 
     if "last-modified" in res.headers:
@@ -57,10 +56,14 @@ def geturl(url, f_2rss):
 
 class AClean(webapp.RequestHandler):
     def get(self):
-        d = datetime.datetime.utcnow() - datetime.timedelta(seconds=config.clean_time)
-        q = db.GqlQuery("SELECT * FROM UrlCache WHERE lastaccess < :1", d)
-        for r in q.fetch(1000):
-            r.delete()
+        if self.request.get('all') != '':
+            memcache.flush_all()
+            for uc in UrlCache.all():
+                uc.delete()
+        else:
+            d = datetime.datetime.utcnow() - datetime.timedelta(seconds=config.clean_time)
+            for r in db.GqlQuery("SELECT * FROM UrlCache WHERE lastaccess < :1", d):
+                r.delete()
 
 class AThreadRss(webapp.RequestHandler):
     def get(self, server, board, thread):
@@ -70,8 +73,6 @@ class AThreadRss(webapp.RequestHandler):
             raise Exception("Validate")
         url = "http://%s/%s/dat/%s.dat" % (server, board, thread)
         rss = memcache.get(url)
-        if config.disable_cache:
-            rss = None
         if rss == "error":
             raise Exception("CachedError")
         if rss is None:
@@ -175,8 +176,6 @@ class ABoardRss(webapp.RequestHandler):
             raise Exception("Validate")
         url = "http://%s/%s/subject.txt" % (server, board)
         rss = memcache.get(url)
-        if config.disable_cache:
-            rss = None
         if rss == "error":
             raise Exception("CachedError")
         if rss is None:
