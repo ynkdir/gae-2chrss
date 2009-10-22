@@ -76,7 +76,6 @@ class AThreadRss(webapp.RequestHandler):
                 f_2rss = lambda uc: self.dat2rss(server, board, thread, uc.content.decode("cp932"), uc.lastmodified)
                 uc = geturl(url, f_2rss)
                 rss = uc.rss
-                rss = self.dat2rss(server, board, thread, uc.content.decode("cp932"), uc.lastmodified)
                 memcache.add(url, rss, time=config.thread_cache_time)
             except:
                 memcache.add(url, "error", time=config.error_cache_time)
