@@ -99,12 +99,12 @@ class AThreadRss(webapp.RequestHandler):
                 name, mail, dd, body, title = [unescape(x) for x in re.split("<>", line)]
                 body = re.sub(r'(?<!<a href=")(h?t?tps?|ftp)://([!-~]+)', linkrepl, body)
                 body = body.replace('<a href="../test/', '<a href="http://%s/test/' % server)
-                if dd == "":
-                    date = datetime.datetime.utcnow.strftime("%a, %d %b %Y %H:%M:%S GMT")
+                m = re.match(r"(?P<year>\d+)/(?P<month>\d+)/(?P<day>\d+)\(.\) (?P<hour>\d+):(?P<minute>\d+):(?P<second>\d+)(?: ID:(?P<id>\S+))?(?: BE:(?P<be>\S+))?", dd)
+                if not m:
+                    date = datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
                     id = None
                     be = None
                 else:
-                    m = re.match(r"(?P<year>\d+)/(?P<month>\d+)/(?P<day>\d+)\(.\) (?P<hour>\d+):(?P<minute>\d+):(?P<second>\d+)(?: ID:(?P<id>\S+))?(?: BE:(?P<be>\S+))?", dd)
                     d = datetime.datetime(
                         year = int(m.group("year")),
                         month = int(m.group("month")),
