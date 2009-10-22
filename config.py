@@ -6,6 +6,6 @@ thread_max_items = 300
 thread_cache_time = 30 * 60
 thread_show_head = True
 board_max_items = 100
-board_cache_time = 30 * 60 * 60
+board_cache_time = 30 * 60
 error_cache_time = 10 * 60
 clean_time = 7 * 24 * 60 * 60
