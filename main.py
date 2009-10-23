@@ -61,7 +61,7 @@ class AClean(webapp.RequestHandler):
             for r in db.GqlQuery("SELECT * FROM UrlCache WHERE lastaccess < :1", d):
                 r.delete()
 
-class AThreadRss(webapp.RequestHandler):
+class AThread(webapp.RequestHandler):
     def get(self, server, board, thread):
         if (not re.match(config.filter_server, server)
                 or not re.match(config.filter_board, board)
@@ -80,10 +80,18 @@ class AThreadRss(webapp.RequestHandler):
             except:
                 memcache.add(url, "error", time=config.error_cache_time)
                 raise
-        self.response.headers["Content-Type"] = "application/rss+xml"
+        self.response.headers["Content-Type"] = self.content_type()
         self.response.out.write(rss)
 
     def dat2rss(self, server, board, thread, content, lastmodified):
+        items = list(self.parse(content, server))
+        title = items[0]['title']
+        items.reverse()
+        if config.thread_max_items > 0:
+            items = items[ : config.thread_max_items]
+        return self.render(server, board, thread, items, lastmodified, title)
+
+    def parse(self, content, server):
         def linkrepl(m):
             s = m.group(1)
             p = m.group(2)
@@ -93,42 +101,40 @@ class AThreadRss(webapp.RequestHandler):
                 s = 'https'
             return '<a href="%s://%s">%s://%s</a>' % (s, p, m.group(1), p)
 
-        def parse():
-            for i, line in enumerate(content.splitlines()):
-                num = str(i + 1)
-                name, mail, dd, body, title = re.split("<>", line)
-                body = re.sub(r'(http|ttp|https|ttps|ftp)://([\x21\x23-\x7E]+)', linkrepl, body)
-                body = re.sub(r'(<a [^>]*href=")../test/', r'\1http://%s/test/' % server, body)
-                m = re.match(r"(?P<year>\d+)/(?P<month>\d+)/(?P<day>\d+)\(.\) (?P<hour>\d+):(?P<minute>\d+):(?P<second>\d+)", dd)
-                if m:
-                    date = datetime.datetime(
-                        year = int(m.group("year")),
-                        month = int(m.group("month")),
-                        day = int(m.group("day")),
-                        hour = int(m.group("hour")),
-                        minute = int(m.group("minute")),
-                        second = int(m.group("second"))
-                    )
-                    # JST -> GMT
-                    date -= datetime.timedelta(hours=9)
-                else:
-                    date = datetime.datetime.utcnow()
-                yield {
-                    'num' : num,
-                    'name' : name,
-                    'mail' : mail,
-                    'dd' : dd,
-                    'date' : date,
-                    'body' : body,
-                    'title' : title,
-                }
+        for i, line in enumerate(content.splitlines()):
+            num = str(i + 1)
+            name, mail, dd, body, title = re.split("<>", line)
+            body = re.sub(r'(http|ttp|https|ttps|ftp)://([\x21\x23-\x7E]+)', linkrepl, body)
+            body = re.sub(r'(<a [^>]*href=")../test/', r'\1http://%s/test/' % server, body)
+            m = re.match(r"(?P<year>\d+)/(?P<month>\d+)/(?P<day>\d+)\(.\) (?P<hour>\d+):(?P<minute>\d+):(?P<second>\d+)", dd)
+            if m:
+                date = datetime.datetime(
+                    year = int(m.group("year")),
+                    month = int(m.group("month")),
+                    day = int(m.group("day")),
+                    hour = int(m.group("hour")),
+                    minute = int(m.group("minute")),
+                    second = int(m.group("second"))
+                )
+                # JST -> GMT
+                date -= datetime.timedelta(hours=9)
+            else:
+                date = datetime.datetime.utcnow()
+            yield {
+                'num' : num,
+                'name' : name,
+                'mail' : mail,
+                'dd' : dd,
+                'date' : date,
+                'body' : body,
+                'title' : title,
+            }
 
-        items = list(parse())
-        title = items[0]['title']
-        items.reverse()
-        if config.thread_max_items > 0:
-            items = items[ : config.thread_max_items]
+class AThreadRss2(AThread):
+    def content_type(self):
+        return "application/rss+xml"
 
+    def render(self, server, board, thread, items, lastmodified, title):
         f = StringIO.StringIO()
         f.write('<?xml version="1.0" encoding="utf-8"?>')
         f.write('<rss version="2.0">')
@@ -157,7 +163,38 @@ class AThreadRss(webapp.RequestHandler):
         f.write('</rss>')
         return f.getvalue().encode('utf-8')
 
-class ABoardRss(webapp.RequestHandler):
+class AThreadAtom1(AThread):
+    def content_type(self):
+        return "application/atom+xml"
+
+    def render(self, server, board, thread, items, lastmodified, title):
+        f = StringIO.StringIO()
+        f.write('<?xml version="1.0" encoding="utf-8"?>')
+        f.write('<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="ja">')
+        f.write('<title>2ch: %s</title>' % title)
+        f.write('<author><name></name></author>')
+        f.write('<link href="http://%s/test/read.cgi/%s/%s/" />' % (server, board, thread))
+        f.write('<updated>%s</updated>' % lastmodified.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        for item in items:
+            f.write('<entry>')
+            f.write('<title>%s</title>' % item['num'])
+            f.write('<link href="http://%s/test/read.cgi/%s/%s/%s" />' % (server, board, thread, item['num']))
+            f.write('<id>http://%s/test/read.cgi/%s/%s/%s</id>' % (server, board, thread, item['num']))
+            f.write('<updated>%s</updated>' % item['date'].strftime("%Y-%m-%dT%H:%M:%SZ"))
+            f.write('<content type="html"><![CDATA[')
+            if config.thread_show_head:
+                if item['mail'] == '':
+                    f.write(u'%s 名前：<b>%s</b> ：%s' % (item['num'], item['name'], item['dd']))
+                else:
+                    f.write(u'%s 名前：<a href="mailto:%s"><b>%s</b></a> ：%s' % (item['num'], item['mail'], item['name'], item['dd']))
+            f.write('<p>%s</p>' % item['body'])
+            f.write(']]></content>')
+            f.write('</entry>')
+        f.write('</feed>')
+        return f.getvalue().encode('utf-8')
+
+
+class ABoard(webapp.RequestHandler):
     def get(self, server, board):
         if (not re.match(config.filter_server, server)
                 or not re.match(config.filter_board, board)):
@@ -175,25 +212,31 @@ class ABoardRss(webapp.RequestHandler):
             except:
                 memcache.add(url, "error", time=config.error_cache_time)
                 raise
-        self.response.headers["Content-Type"] = "application/rss+xml"
+        self.response.headers["Content-Type"] = self.content_type()
         self.response.out.write(rss)
 
     def subject2rss(self, server, board, content, lastmodified):
-        def parse():
-            for line in content.splitlines():
-                datfile, title = re.split("<>", line)
-                thread = re.sub(r"^(\d+)\.dat", r"\1", datfile)
-                title = re.sub(r"\s*\(\d+\)$", "", title)
-                yield {
-                    "thread" : thread,
-                    "title" : title,
-                }
-
-        items = list(parse())
+        items = list(self.parse(content))
         items.sort(key = lambda x: int(x["thread"]), reverse=True)
         if config.board_max_items > 0:
             items = items[ : config.board_max_items]
+        return self.render(server, board, items, lastmodified)
 
+    def parse(self, content):
+        for line in content.splitlines():
+            datfile, title = re.split("<>", line)
+            thread = re.sub(r"^(\d+)\.dat", r"\1", datfile)
+            title = re.sub(r"\s*\(\d+\)$", "", title)
+            yield {
+                "thread" : thread,
+                "title" : title,
+            }
+
+class ABoardRss2(ABoard):
+    def content_type(self):
+        return "application/rss+xml"
+
+    def render(self, server, board, items, lastmodified):
         f = StringIO.StringIO()
         f.write('<?xml version="1.0" encoding="utf-8"?>')
         f.write('<rss version="2.0">')
@@ -213,10 +256,32 @@ class ABoardRss(webapp.RequestHandler):
         f.write('</rss>')
         return f.getvalue().encode('utf-8')
 
+
+class ABoardAtom1(ABoard):
+    def content_type(self):
+        return "application/atom+xml"
+
+    def render(self, server, board, items, lastmodified):
+        f = StringIO.StringIO()
+        f.write('<?xml version="1.0" encoding="utf-8"?>')
+        f.write('<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="ja">')
+        f.write('<title>2ch: %s</title>' % board)
+        f.write('<author><name></name></author>')
+        f.write('<link href="http://%s/test/read.cgi/%s/" />' % (server, board))
+        f.write('<updated>%s</updated>' % lastmodified.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        for item in items:
+            f.write('<entry>')
+            f.write('<title>%s</title>' % item['title'])
+            f.write('<link href="http://%s/test/read.cgi/%s/%s/" />' % (server, board, item['thread']))
+            f.write('<id>http://%s/test/read.cgi/%s/%s/</id>' % (server, board, item['thread']))
+            f.write('</entry>')
+        f.write('</feed>')
+        return f.getvalue().encode('utf-8')
+
 application = webapp.WSGIApplication(
     [('/clean', AClean),
-     ('/(.+)/(.+)/(.+)/', AThreadRss),
-     ('/(.+)/(.+)/', ABoardRss),
+     ('/(.+)/(.+)/(.+)/', AThreadAtom1),
+     ('/(.+)/(.+)/', ABoardAtom1),
     ],
     debug=config.debug)
 
