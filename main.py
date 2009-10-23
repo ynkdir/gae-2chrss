@@ -10,7 +10,6 @@ import re
 import os
 import os.path
 import datetime
-from xml.sax.saxutils import unescape, escape
 import StringIO
 
 import config
@@ -21,9 +20,6 @@ class UrlCache(db.Model):
     lastmodified = db.DateTimeProperty()
     lastaccess = db.DateTimeProperty()
     rss = db.BlobProperty()
-
-def escapeattr(s):
-    return escape(s, {'"':'&quot;'})
 
 def geturl(url, f_2rss):
     key_name = "uc_" + url
@@ -100,16 +96,12 @@ class AThreadRss(webapp.RequestHandler):
         def parse():
             for i, line in enumerate(content.splitlines()):
                 num = str(i + 1)
-                name, mail, dd, body, title = [unescape(x) for x in re.split("<>", line)]
-                body = re.sub(r'(?<!<a href=")(h?t?tps?|ftp)://([!-~]+)', linkrepl, body)
-                body = body.replace('<a href="../test/', '<a href="http://%s/test/' % server)
-                m = re.match(r"(?P<year>\d+)/(?P<month>\d+)/(?P<day>\d+)\(.\) (?P<hour>\d+):(?P<minute>\d+):(?P<second>\d+)(?: ID:(?P<id>\S+))?(?: BE:(?P<be>\S+))?", dd)
-                if not m:
-                    date = datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
-                    id = None
-                    be = None
-                else:
-                    d = datetime.datetime(
+                name, mail, dd, body, title = re.split("<>", line)
+                body = re.sub(r'(http|ttp|tp|https|ttps|tps|ftp)://([\x21\x23-\x7E]+)', linkrepl, body)
+                body = re.sub(r'(<a [^>]*href=")../test/', r'\1http://%s/test/' % server, body)
+                m = re.match(r"(?P<year>\d+)/(?P<month>\d+)/(?P<day>\d+)\(.\) (?P<hour>\d+):(?P<minute>\d+):(?P<second>\d+)", dd)
+                if m:
+                    date = datetime.datetime(
                         year = int(m.group("year")),
                         month = int(m.group("month")),
                         day = int(m.group("day")),
@@ -118,18 +110,15 @@ class AThreadRss(webapp.RequestHandler):
                         second = int(m.group("second"))
                     )
                     # JST -> GMT
-                    d = d - datetime.timedelta(hours=9)
-                    date = d.strftime("%a, %d %b %Y %H:%M:%S GMT")
-                    id = m.group("id")
-                    be = m.group("be")
+                    date -= datetime.timedelta(hours=9)
+                else:
+                    date = datetime.datetime.utcnow()
                 yield {
                     'num' : num,
                     'name' : name,
                     'mail' : mail,
                     'dd' : dd,
                     'date' : date,
-                    'id' : id,
-                    'be' : be,
                     'body' : body,
                     'title' : title,
                 }
@@ -144,9 +133,9 @@ class AThreadRss(webapp.RequestHandler):
         f.write('<?xml version="1.0" encoding="utf-8"?>')
         f.write('<rss version="2.0">')
         f.write('<channel>')
-        f.write('<title>2ch: %s</title>' % escape(title))
+        f.write('<title>2ch: %s</title>' % title)
         f.write('<link>http://%s/test/read.cgi/%s/%s/</link>' % (server, board, thread))
-        f.write('<description>2ch: %s</description>' % escape(title))
+        f.write('<description>2ch: %s</description>' % title)
         f.write('<language>ja</language>')
         f.write('<pubDate>%s</pubDate>' % lastmodified.strftime("%a, %d %b %Y %H:%M:%S GMT"))
         for item in items:
@@ -154,20 +143,19 @@ class AThreadRss(webapp.RequestHandler):
             f.write('<title>%s</title>' % item['num'])
             f.write('<link>http://%s/test/read.cgi/%s/%s/%s</link>' % (server, board, thread, item['num']))
             f.write('<guid isPermaLink="true">http://%s/test/read.cgi/%s/%s/%s</guid>' % (server, board, thread, item['num']))
-            f.write('<pubDate>%s</pubDate>' % item['date'])
+            f.write('<pubDate>%s</pubDate>' % item['date'].strftime("%a, %d %b %Y %H:%M:%S GMT"))
             f.write('<description><![CDATA[')
             if config.thread_show_head:
                 if item['mail'] == '':
-                    f.write(u'%s 名前：<b>%s</b> ：%s' % (item['num'], escape(item['name']), escape(item['dd'])))
+                    f.write(u'%s 名前：<b>%s</b> ：%s' % (item['num'], item['name'], item['dd']))
                 else:
-                    f.write(u'%s 名前：<a href="mailto:%s"><b>%s</b></a> ：%s' % (item['num'], escapeattr(item['mail']), escape(item['name']), escape(item['dd'])))
+                    f.write(u'%s 名前：<a href="mailto:%s"><b>%s</b></a> ：%s' % (item['num'], item['mail'], item['name'], item['dd']))
             f.write('<p>%s</p>' % item['body'])
             f.write(']]></description>')
             f.write('</item>')
         f.write('</channel>')
         f.write('</rss>')
         return f.getvalue().encode('utf-8')
-
 
 class ABoardRss(webapp.RequestHandler):
     def get(self, server, board):
@@ -193,13 +181,14 @@ class ABoardRss(webapp.RequestHandler):
     def subject2rss(self, server, board, content, lastmodified):
         def parse():
             for line in content.splitlines():
-                datfile, title = [unescape(x) for x in re.split("<>", line)]
+                datfile, title = re.split("<>", line)
                 thread = re.sub(r"^(\d+)\.dat", r"\1", datfile)
                 title = re.sub(r"\s*\(\d+\)$", "", title)
                 yield {
                     "thread" : thread,
                     "title" : title,
                 }
+
         items = list(parse())
         items.sort(key = lambda x: int(x["thread"]), reverse=True)
         if config.board_max_items > 0:
@@ -209,14 +198,14 @@ class ABoardRss(webapp.RequestHandler):
         f.write('<?xml version="1.0" encoding="utf-8"?>')
         f.write('<rss version="2.0">')
         f.write('<channel>')
-        f.write('<title>2ch: %s</title>' % escape(board))
+        f.write('<title>2ch: %s</title>' % board)
         f.write('<link>http://%s/test/read.cgi/%s/</link>' % (server, board))
-        f.write('<description>2ch: %s</description>' % escape(board))
+        f.write('<description>2ch: %s</description>' % board)
         f.write('<language>ja</language>')
         f.write('<pubDate>%s</pubDate>' % lastmodified.strftime("%a, %d %b %Y %H:%M:%S GMT"))
         for item in items:
             f.write('<item>')
-            f.write('<title>%s</title>' % escape(item['title']))
+            f.write('<title>%s</title>' % item['title'])
             f.write('<link>http://%s/test/read.cgi/%s/%s/</link>' % (server, board, item['thread']))
             f.write('<guid isPermaLink="true">http://%s/test/read.cgi/%s/%s/</guid>' % (server, board, item['thread']))
             f.write('</item>')
