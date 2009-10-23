@@ -87,9 +87,9 @@ class AThreadRss(webapp.RequestHandler):
         def linkrepl(m):
             s = m.group(1)
             p = m.group(2)
-            if s == 'ttp' or s == 'tp':
+            if s == 'ttp':
                 s = 'http'
-            elif s == 'ttps' or s == 'tps':
+            elif s == 'ttps':
                 s = 'https'
             return '<a href="%s://%s">%s://%s</a>' % (s, p, m.group(1), p)
 
@@ -97,7 +97,7 @@ class AThreadRss(webapp.RequestHandler):
             for i, line in enumerate(content.splitlines()):
                 num = str(i + 1)
                 name, mail, dd, body, title = re.split("<>", line)
-                body = re.sub(r'(http|ttp|tp|https|ttps|tps|ftp)://([\x21\x23-\x7E]+)', linkrepl, body)
+                body = re.sub(r'(http|ttp|https|ttps|ftp)://([\x21\x23-\x7E]+)', linkrepl, body)
                 body = re.sub(r'(<a [^>]*href=")../test/', r'\1http://%s/test/' % server, body)
                 m = re.match(r"(?P<year>\d+)/(?P<month>\d+)/(?P<day>\d+)\(.\) (?P<hour>\d+):(?P<minute>\d+):(?P<second>\d+)", dd)
                 if m:
