@@ -167,6 +167,7 @@ class Thread2Atom1(Thread2Rss):
         f.write('<title>2ch: %s</title>' % title)
         f.write('<author><name></name></author>')
         f.write('<link href="http://%s/test/read.cgi/%s/%s/" />' % (server, board, thread))
+        f.write('<id>http://%s/test/read.cgi/%s/%s/</id>' % (server, board, thread))
         f.write('<updated>%s</updated>' % lastmodified.strftime("%Y-%m-%dT%H:%M:%SZ"))
         for item in items:
             f.write('<entry>')
@@ -239,7 +240,7 @@ class Board2Rss2(Board2Rss):
         f.write('<rss version="2.0">')
         f.write('<channel>')
         f.write('<title>2ch: %s</title>' % board)
-        f.write('<link>http://%s/test/read.cgi/%s/</link>' % (server, board))
+        f.write('<link>http://%s/%s/</link>' % (server, board))
         f.write('<description>2ch: %s</description>' % board)
         f.write('<language>ja</language>')
         f.write('<pubDate>%s</pubDate>' % lastmodified.strftime("%a, %d %b %Y %H:%M:%S GMT"))
@@ -265,7 +266,8 @@ class Board2Atom1(Board2Rss):
         f.write('<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="ja">')
         f.write('<title>2ch: %s</title>' % board)
         f.write('<author><name></name></author>')
-        f.write('<link href="http://%s/test/read.cgi/%s/" />' % (server, board))
+        f.write('<link href="http://%s/%s/" />' % (server, board))
+        f.write('<id>http://%s/%s/</id>' % (server, board))
         f.write('<updated>%s</updated>' % lastmodified.strftime("%Y-%m-%dT%H:%M:%SZ"))
         for item in items:
             f.write('<entry>')
