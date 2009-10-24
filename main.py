@@ -227,9 +227,15 @@ class ABoard(webapp.RequestHandler):
             datfile, title = re.split("<>", line)
             thread = re.sub(r"^(\d+)\.dat", r"\1", datfile)
             title = re.sub(r"\s*\(\d+\)$", "", title)
+            if thread.startswith("924"):
+                # may be a special number for ad.  (e.g. "924%y%m%d", "924%y%m%d1")
+                date = None
+            else:
+                date = datetime.datetime.fromtimestamp(int(thread))
             yield {
                 "thread" : thread,
                 "title" : title,
+                "date" : date,
             }
 
 class ABoardRss2(ABoard):
@@ -251,6 +257,8 @@ class ABoardRss2(ABoard):
             f.write('<title>%s</title>' % item['title'])
             f.write('<link>http://%s/test/read.cgi/%s/%s/</link>' % (server, board, item['thread']))
             f.write('<guid isPermaLink="true">http://%s/test/read.cgi/%s/%s/</guid>' % (server, board, item['thread']))
+            if item['date']:
+                f.write('<pubDate>%s</pubDate>' % item['date'].strftime("%a, %d %b %Y %H:%M:%S GMT"))
             f.write('</item>')
         f.write('</channel>')
         f.write('</rss>')
@@ -274,6 +282,8 @@ class ABoardAtom1(ABoard):
             f.write('<title>%s</title>' % item['title'])
             f.write('<link href="http://%s/test/read.cgi/%s/%s/" />' % (server, board, item['thread']))
             f.write('<id>http://%s/test/read.cgi/%s/%s/</id>' % (server, board, item['thread']))
+            if item['date']:
+                f.write('<updated>%s</updated>' % item['date'].strftime("%Y-%m-%dT%H:%M:%SZ"))
             f.write('</entry>')
         f.write('</feed>')
         return f.getvalue().encode('utf-8')
