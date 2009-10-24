@@ -289,7 +289,7 @@ class AIndex(webapp.RequestHandler):
             self.response.out.write(render("index.html", template_values))
             return
 
-        m = re.match(r"http://([^\/]+)/test/read\.cgi/(\w+)/(\d+)/", url)
+        m = re.match(r"http://([^/]+)/test/read\.cgi/(\w+)/(\d+)/", url)
         if m:
             c = Thread2Atom1()
             rss = c.get(m.group(1), m.group(2), m.group(3))
@@ -297,7 +297,7 @@ class AIndex(webapp.RequestHandler):
             self.response.out.write(rss)
             return
 
-        m = re.match(r"http://([^\/]+)/(\w+)/", url)
+        m = re.match(r"http://([^/]+)/(\w+)/", url)
         if m:
             c = Board2Atom1()
             rss = c.get(m.group(1), m.group(2))
