@@ -1,6 +1,7 @@
 # coding: utf-8
 
 from google.appengine.ext import webapp
+from google.appengine.ext.webapp import template
 from google.appengine.ext.webapp.util import run_wsgi_app
 from google.appengine.ext import db
 from google.appengine.api import urlfetch
@@ -20,6 +21,10 @@ class UrlCache(db.Model):
     lastmodified = db.DateTimeProperty()
     lastaccess = db.DateTimeProperty()
     rss = db.BlobProperty()
+
+def render(template_file, template_values):
+    path = os.path.join(os.path.dirname(__file__), "templates", template_file)
+    return template.render(path, template_values)
 
 def geturl(url, f_2rss):
     key_name = "uc_" + url
@@ -50,18 +55,7 @@ def geturl(url, f_2rss):
 
     return uc
 
-class AClean(webapp.RequestHandler):
-    def get(self):
-        if self.request.get('all') != '':
-            memcache.flush_all()
-            for uc in UrlCache.all():
-                uc.delete()
-        else:
-            d = datetime.datetime.utcnow() - datetime.timedelta(seconds=config.clean_time)
-            for r in db.GqlQuery("SELECT * FROM UrlCache WHERE lastaccess < :1", d):
-                r.delete()
-
-class AThread(webapp.RequestHandler):
+class Thread2Rss:
     def get(self, server, board, thread):
         if (not re.match(config.filter_server, server)
                 or not re.match(config.filter_board, board)
@@ -80,8 +74,7 @@ class AThread(webapp.RequestHandler):
             except:
                 memcache.add(url, "error", time=config.error_cache_time)
                 raise
-        self.response.headers["Content-Type"] = self.content_type()
-        self.response.out.write(rss)
+        return rss
 
     def dat2rss(self, server, board, thread, content, lastmodified):
         items = list(self.parse(content, server))
@@ -130,7 +123,7 @@ class AThread(webapp.RequestHandler):
                 'title' : title,
             }
 
-class AThreadRss2(AThread):
+class Thread2Rss2(Thread2Rss):
     def content_type(self):
         return "application/rss+xml"
 
@@ -163,7 +156,7 @@ class AThreadRss2(AThread):
         f.write('</rss>')
         return f.getvalue().encode('utf-8')
 
-class AThreadAtom1(AThread):
+class Thread2Atom1(Thread2Rss):
     def content_type(self):
         return "application/atom+xml"
 
@@ -193,8 +186,7 @@ class AThreadAtom1(AThread):
         f.write('</feed>')
         return f.getvalue().encode('utf-8')
 
-
-class ABoard(webapp.RequestHandler):
+class Board2Rss:
     def get(self, server, board):
         if (not re.match(config.filter_server, server)
                 or not re.match(config.filter_board, board)):
@@ -212,8 +204,7 @@ class ABoard(webapp.RequestHandler):
             except:
                 memcache.add(url, "error", time=config.error_cache_time)
                 raise
-        self.response.headers["Content-Type"] = self.content_type()
-        self.response.out.write(rss)
+        return rss
 
     def subject2rss(self, server, board, content, lastmodified):
         items = list(self.parse(content))
@@ -238,7 +229,7 @@ class ABoard(webapp.RequestHandler):
                 "date" : date,
             }
 
-class ABoardRss2(ABoard):
+class Board2Rss2(Board2Rss):
     def content_type(self):
         return "application/rss+xml"
 
@@ -264,8 +255,7 @@ class ABoardRss2(ABoard):
         f.write('</rss>')
         return f.getvalue().encode('utf-8')
 
-
-class ABoardAtom1(ABoard):
+class Board2Atom1(Board2Rss):
     def content_type(self):
         return "application/atom+xml"
 
@@ -288,10 +278,47 @@ class ABoardAtom1(ABoard):
         f.write('</feed>')
         return f.getvalue().encode('utf-8')
 
+class AIndex(webapp.RequestHandler):
+    def get(self):
+        url = self.request.get("url")
+
+        if url == "":
+            template_values = {"root":self.request.url}
+            self.response.out.write(render("index.html", template_values))
+            return
+
+        m = re.match(r"http://([^\/]+)/test/read\.cgi/(\w+)/(\d+)/", url)
+        if m:
+            c = Thread2Atom1()
+            rss = c.get(m.group(1), m.group(2), m.group(3))
+            self.response.headers["Content-Type"] = c.content_type()
+            self.response.out.write(rss)
+            return
+
+        m = re.match(r"http://([^\/]+)/(\w+)/", url)
+        if m:
+            c = Board2Atom1()
+            rss = c.get(m.group(1), m.group(2))
+            self.response.headers["Content-Type"] = c.content_type()
+            self.response.out.write(rss)
+            return
+
+        raise Exception("Validate")
+
+class AClean(webapp.RequestHandler):
+    def get(self):
+        if self.request.get('all') != '':
+            memcache.flush_all()
+            for uc in UrlCache.all():
+                uc.delete()
+        else:
+            d = datetime.datetime.utcnow() - datetime.timedelta(seconds=config.clean_time)
+            for r in db.GqlQuery("SELECT * FROM UrlCache WHERE lastaccess < :1", d):
+                r.delete()
+
 application = webapp.WSGIApplication(
-    [('/clean', AClean),
-     ('/(.+)/(.+)/(.+)/', AThreadAtom1),
-     ('/(.+)/(.+)/', ABoardAtom1),
+    [('/', AIndex),
+     ('/clean', AClean),
     ],
     debug=config.debug)
 
