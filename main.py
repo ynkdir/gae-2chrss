@@ -67,7 +67,7 @@ class Thread2Rss:
             raise Exception("CachedError")
         if rss is None:
             try:
-                f_2rss = lambda uc: self.dat2rss(server, board, thread, uc.content.decode("cp932"), uc.lastmodified)
+                f_2rss = lambda uc: self.dat2rss(server, board, thread, uc.content.decode("cp932", "replace"), uc.lastmodified)
                 uc = geturl(url, f_2rss)
                 rss = uc.rss
                 memcache.add(url, rss, time=config.thread_cache_time)
@@ -198,7 +198,7 @@ class Board2Rss:
             raise Exception("CachedError")
         if rss is None:
             try:
-                f_2rss = lambda uc: self.subject2rss(server, board, uc.content.decode("cp932"), uc.lastmodified)
+                f_2rss = lambda uc: self.subject2rss(server, board, uc.content.decode("cp932", "replace"), uc.lastmodified)
                 uc = geturl(url, f_2rss)
                 rss = uc.rss
                 memcache.add(url, rss, time=config.board_cache_time)
