@@ -26,7 +26,7 @@ def render(template_file, template_values):
     path = os.path.join(os.path.dirname(__file__), "templates", template_file)
     return template.render(path, template_values)
 
-def geturl(url, f_2rss):
+def get_url(url, f_2rss):
     key_name = "uc_" + url
     uc = UrlCache.get_by_key_name(key_name)
 
@@ -55,6 +55,22 @@ def geturl(url, f_2rss):
 
     return uc
 
+def get_title(server, board):
+    url = "http://%s/%s/SETTING.TXT" % (server, board)
+    title = memcache.get(url)
+    if title:
+        return title
+    res = urlfetch.fetch(url=url)
+    if res.status_code != 200:
+        raise Exception("BadResponse")
+    content = res.content.decode("cp932", "replace")
+    for line in content.splitlines()[1:]:
+        key, value = line.split("=", 1)
+        if key == "BBS_TITLE":
+            memcache.add(url, value)
+            return value
+    return board
+
 class Thread2Rss:
     def get(self, server, board, thread):
         if (not re.match(config.filter_server, server)
@@ -68,7 +84,7 @@ class Thread2Rss:
         if rss is None:
             try:
                 f_2rss = lambda uc: self.dat2rss(server, board, thread, uc.content.decode("cp932", "replace"), uc.lastmodified)
-                uc = geturl(url, f_2rss)
+                uc = get_url(url, f_2rss)
                 rss = uc.rss
                 memcache.add(url, rss, time=config.thread_cache_time)
             except:
@@ -199,7 +215,7 @@ class Board2Rss:
         if rss is None:
             try:
                 f_2rss = lambda uc: self.subject2rss(server, board, uc.content.decode("cp932", "replace"), uc.lastmodified)
-                uc = geturl(url, f_2rss)
+                uc = get_url(url, f_2rss)
                 rss = uc.rss
                 memcache.add(url, rss, time=config.board_cache_time)
             except:
@@ -212,7 +228,8 @@ class Board2Rss:
         items.sort(key = lambda x: int(x["thread"]), reverse=True)
         if config.board_max_items > 0:
             items = items[ : config.board_max_items]
-        return self.render(server, board, items, lastmodified)
+        title = get_title(server, board)
+        return self.render(server, board, items, lastmodified, title)
 
     def parse(self, content):
         for line in content.splitlines():
@@ -234,14 +251,14 @@ class Board2Rss2(Board2Rss):
     def content_type(self):
         return "application/rss+xml"
 
-    def render(self, server, board, items, lastmodified):
+    def render(self, server, board, items, lastmodified, title):
         f = StringIO.StringIO()
         f.write('<?xml version="1.0" encoding="utf-8"?>')
         f.write('<rss version="2.0">')
         f.write('<channel>')
-        f.write('<title>%s</title>' % board)
+        f.write('<title>%s</title>' % title)
         f.write('<link>http://%s/%s/</link>' % (server, board))
-        f.write('<description>%s</description>' % board)
+        f.write('<description>%s</description>' % title)
         f.write('<language>ja</language>')
         f.write('<pubDate>%s</pubDate>' % lastmodified.strftime("%a, %d %b %Y %H:%M:%S GMT"))
         for item in items:
@@ -260,11 +277,11 @@ class Board2Atom1(Board2Rss):
     def content_type(self):
         return "application/atom+xml"
 
-    def render(self, server, board, items, lastmodified):
+    def render(self, server, board, items, lastmodified, title):
         f = StringIO.StringIO()
         f.write('<?xml version="1.0" encoding="utf-8"?>')
         f.write('<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="ja">')
-        f.write('<title>%s</title>' % board)
+        f.write('<title>%s</title>' % title)
         f.write('<author><name></name></author>')
         f.write('<link href="http://%s/%s/" />' % (server, board))
         f.write('<id>http://%s/%s/</id>' % (server, board))
