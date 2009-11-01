@@ -51,7 +51,7 @@ def get_url(url, f_2rss):
     elif res.status_code == 304:
         pass
     else:
-        raise Exception("BadResponse")
+        raise Exception("BadResponse", url, res.status_code)
 
     return uc
 
@@ -62,7 +62,7 @@ def get_title(server, board):
         return title
     res = urlfetch.fetch(url=url)
     if res.status_code != 200:
-        raise Exception("BadResponse")
+        raise Exception("BadResponse", url, res.status_code)
     content = res.content.decode("cp932", "replace")
     for line in content.splitlines()[1:]:
         key, value = line.split("=", 1)
@@ -79,16 +79,16 @@ class Thread2Rss:
             raise Exception("Validate")
         url = "http://%s/%s/dat/%s.dat" % (server, board, thread)
         rss = memcache.get(url)
-        if rss == "error":
-            raise Exception("CachedError")
+        if isinstance(rss, Exception):
+            raise Exception("CachedError", rss)
         if rss is None:
             try:
                 f_2rss = lambda uc: self.dat2rss(server, board, thread, uc.content.decode("cp932", "replace"), uc.lastmodified)
                 uc = get_url(url, f_2rss)
                 rss = uc.rss
                 memcache.add(url, rss, time=config.thread_cache_time)
-            except:
-                memcache.add(url, "error", time=config.error_cache_time)
+            except Exception, e:
+                memcache.add(url, e, time=config.error_cache_time)
                 raise
         return rss
 
@@ -210,16 +210,16 @@ class Board2Rss:
             raise Exception("Validate")
         url = "http://%s/%s/subject.txt" % (server, board)
         rss = memcache.get(url)
-        if rss == "error":
-            raise Exception("CachedError")
+        if isinstance(rss, Exception):
+            raise Exception("CachedError", rss)
         if rss is None:
             try:
                 f_2rss = lambda uc: self.subject2rss(server, board, uc.content.decode("cp932", "replace"), uc.lastmodified)
                 uc = get_url(url, f_2rss)
                 rss = uc.rss
                 memcache.add(url, rss, time=config.board_cache_time)
-            except:
-                memcache.add(url, "error", time=config.error_cache_time)
+            except Exception, e:
+                memcache.add(url, e, time=config.error_cache_time)
                 raise
         return rss
 
