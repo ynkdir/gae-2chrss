@@ -7,6 +7,7 @@ from google.appengine.ext import db
 from google.appengine.api import urlfetch
 from google.appengine.api import memcache
 
+import logging
 import re
 import os
 import os.path
@@ -117,16 +118,21 @@ class Thread2Rss:
             body = re.sub(r'(<a [^>]*href=")../test/', r'\1http://%s/test/' % server, body)
             m = re.match(r"(?P<year>\d+)/(?P<month>\d+)/(?P<day>\d+)\(.\) (?P<hour>\d+):(?P<minute>\d+):(?P<second>\d+)", dd)
             if m:
-                date = datetime.datetime(
-                    year = int(m.group("year")),
-                    month = int(m.group("month")),
-                    day = int(m.group("day")),
-                    hour = int(m.group("hour")),
-                    minute = int(m.group("minute")),
-                    second = int(m.group("second"))
-                )
-                # JST -> GMT
-                date -= datetime.timedelta(hours=9)
+                try:
+                    date = datetime.datetime(
+                        year = int(m.group("year")),
+                        month = int(m.group("month")),
+                        day = int(m.group("day")),
+                        hour = int(m.group("hour")),
+                        minute = int(m.group("minute")),
+                        second = int(m.group("second"))
+                    )
+                    # JST -> GMT
+                    date -= datetime.timedelta(hours=9)
+                except ValueError:
+                    # It can be an invalid date
+                    logging.info(dd)
+                    date = datetime.datetime.utcnow()
             else:
                 date = datetime.datetime.utcnow()
             yield {
