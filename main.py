@@ -21,15 +21,33 @@ class UrlCache(db.Model):
     content = db.BlobProperty()
     lastmodified = db.DateTimeProperty()
     lastaccess = db.DateTimeProperty()
-    rss = db.BlobProperty()
+
+def dmemcache(time):
+    def deco(f):
+        def wrap(*args):
+            key = "%s:%s" % (f.__name__, args)
+            v = memcache.get(key)
+            if isinstance(v, Exception):
+                raise Exception("CachedError", v)
+            if v is None:
+                try:
+                    v = f(*args)
+                    memcache.add(key, v, time=time)
+                except Exception, e:
+                    memcache.add(key, e, time=config.error_cache_time)
+                    raise
+            else:
+                logging.info("cached: " + f.__name__)
+            return v
+        return wrap
+    return deco
 
 def render(template_file, template_values):
     path = os.path.join(os.path.dirname(__file__), "templates", template_file)
     return template.render(path, template_values)
 
-def get_url(url, f_2rss):
-    key_name = "uc_" + url
-    uc = UrlCache.get_by_key_name(key_name)
+def get_url(url):
+    uc = UrlCache.get_by_key_name(url)
 
     headers = {}
     if uc:
@@ -42,12 +60,11 @@ def get_url(url, f_2rss):
         lastmodified = datetime.datetime.utcnow()
 
     if res.status_code == 200:
-        uc = UrlCache(key_name=key_name)
+        uc = UrlCache(key_name=url)
         uc.url = url
         uc.content = db.Blob(res.content)
         uc.lastmodified = lastmodified
         uc.lastaccess = datetime.datetime.utcnow()
-        uc.rss = db.Blob(f_2rss(uc))
         uc.put()
     elif res.status_code == 304:
         pass
@@ -56,256 +73,228 @@ def get_url(url, f_2rss):
 
     return uc
 
-def get_title(server, board):
+def get_board_title(server, board):
     url = "http://%s/%s/SETTING.TXT" % (server, board)
-    title = memcache.get(url)
-    if title:
-        return title
-    res = urlfetch.fetch(url=url)
-    if res.status_code != 200:
-        raise Exception("BadResponse", url, res.status_code)
-    content = res.content.decode("cp932", "replace")
+    uc = get_url(url)
+    content = uc.content.decode("cp932", "replace")
     for line in content.splitlines()[1:]:
         key, value = line.split("=", 1)
         if key == "BBS_TITLE":
-            memcache.add(url, value)
-            return value
-    return board
+            title = value
+            break
+    else:
+        title = board
+    return title
 
-class Thread2Rss:
-    def get(self, server, board, thread):
-        if (not re.match(config.filter_server, server)
-                or not re.match(config.filter_board, board)
-                or not re.match(r"^\d+$", thread)):
-            raise Exception("Validate")
-        url = "http://%s/%s/dat/%s.dat" % (server, board, thread)
-        rss = memcache.get(url)
-        if isinstance(rss, Exception):
-            raise Exception("CachedError", rss)
-        if rss is None:
+def parse_dat(server, board, thread, content, limit):
+    def linkrepl(m):
+        s = m.group(1)
+        p = m.group(2)
+        if s == 'ttp':
+            s = 'http'
+        elif s == 'ttps':
+            s = 'https'
+        return '<a href="%s://%s">%s://%s</a>' % (s, p, m.group(1), p)
+
+    def parse_line(num, line):
+        name, mail, dd, body, title = re.split("<>", line)
+        body = re.sub(r'(http|ttp|https|ttps|ftp)://([\x21\x23-\x7E]+)', linkrepl, body)
+        body = re.sub(r'(<a [^>]*href=")../test/', r'\1http://%s/test/' % server, body)
+        m = re.match(r"(?P<year>\d+)/(?P<month>\d+)/(?P<day>\d+)\(.\) (?P<hour>\d+):(?P<minute>\d+):(?P<second>\d+)", dd)
+        if m:
             try:
-                f_2rss = lambda uc: self.dat2rss(server, board, thread, uc.content.decode("cp932", "replace"), uc.lastmodified)
-                uc = get_url(url, f_2rss)
-                rss = uc.rss
-                memcache.add(url, rss, time=config.thread_cache_time)
-            except Exception, e:
-                memcache.add(url, e, time=config.error_cache_time)
-                raise
-        return rss
-
-    def dat2rss(self, server, board, thread, content, lastmodified):
-        items = list(self.parse(content, server))
-        title = items[0]['title']
-        items.reverse()
-        if config.thread_max_items > 0:
-            items = items[ : config.thread_max_items]
-        return self.render(server, board, thread, items, lastmodified, title)
-
-    def parse(self, content, server):
-        def linkrepl(m):
-            s = m.group(1)
-            p = m.group(2)
-            if s == 'ttp':
-                s = 'http'
-            elif s == 'ttps':
-                s = 'https'
-            return '<a href="%s://%s">%s://%s</a>' % (s, p, m.group(1), p)
-
-        for i, line in enumerate(content.splitlines()):
-            num = str(i + 1)
-            name, mail, dd, body, title = re.split("<>", line)
-            body = re.sub(r'(http|ttp|https|ttps|ftp)://([\x21\x23-\x7E]+)', linkrepl, body)
-            body = re.sub(r'(<a [^>]*href=")../test/', r'\1http://%s/test/' % server, body)
-            m = re.match(r"(?P<year>\d+)/(?P<month>\d+)/(?P<day>\d+)\(.\) (?P<hour>\d+):(?P<minute>\d+):(?P<second>\d+)", dd)
-            if m:
-                try:
-                    date = datetime.datetime(
-                        year = int(m.group("year")),
-                        month = int(m.group("month")),
-                        day = int(m.group("day")),
-                        hour = int(m.group("hour")),
-                        minute = int(m.group("minute")),
-                        second = int(m.group("second"))
-                    )
-                    # JST -> GMT
-                    date -= datetime.timedelta(hours=9)
-                except ValueError:
-                    # It can be an invalid date
-                    logging.info(dd)
-                    date = datetime.datetime.utcnow()
-            else:
+                date = datetime.datetime(
+                    year = int(m.group("year")),
+                    month = int(m.group("month")),
+                    day = int(m.group("day")),
+                    hour = int(m.group("hour")),
+                    minute = int(m.group("minute")),
+                    second = int(m.group("second"))
+                )
+                # JST -> GMT
+                date -= datetime.timedelta(hours=9)
+            except ValueError:
+                # It can be an invalid date
+                logging.info(dd)
                 date = datetime.datetime.utcnow()
-            yield {
-                'num' : num,
-                'name' : name,
-                'mail' : mail,
-                'dd' : dd,
-                'date' : date,
-                'body' : body,
-                'title' : title,
-            }
+        else:
+            date = datetime.datetime.utcnow()
+        return {
+            'num' : num,
+            'name' : name,
+            'mail' : mail,
+            'dd' : dd,
+            'date' : date,
+            'body' : body,
+            'title' : title,
+        }
 
-class Thread2Rss2(Thread2Rss):
-    def content_type(self):
-        return "application/rss+xml"
+    lines = content.splitlines()
+    first = parse_line("1", lines[0])
+    return (
+        first['title'],
+        (parse_line(str(i + 1), lines[i]) for i in range(len(lines) - 1, max(len(lines) - limit, 0) - 1, -1))
+    )
 
-    def render(self, server, board, thread, items, lastmodified, title):
-        f = StringIO.StringIO()
-        f.write('<?xml version="1.0" encoding="utf-8"?>')
-        f.write('<rss version="2.0">')
-        f.write('<channel>')
-        f.write('<title>%s</title>' % title)
-        f.write('<link>http://%s/test/read.cgi/%s/%s/</link>' % (server, board, thread))
-        f.write('<description>%s</description>' % title)
-        f.write('<language>ja</language>')
-        f.write('<pubDate>%s</pubDate>' % lastmodified.strftime("%a, %d %b %Y %H:%M:%S GMT"))
-        for item in items:
-            f.write('<item>')
-            f.write('<title>%s</title>' % item['num'])
-            f.write('<link>http://%s/test/read.cgi/%s/%s/%s</link>' % (server, board, thread, item['num']))
-            f.write('<guid isPermaLink="true">http://%s/test/read.cgi/%s/%s/%s</guid>' % (server, board, thread, item['num']))
-            f.write('<pubDate>%s</pubDate>' % item['date'].strftime("%a, %d %b %Y %H:%M:%S GMT"))
-            f.write('<description><![CDATA[')
-            if config.thread_show_head:
-                if item['mail'] == '':
-                    f.write(u'%s 名前：<b>%s</b> ：%s' % (item['num'], item['name'], item['dd']))
-                else:
-                    f.write(u'%s 名前：<a href="mailto:%s"><b>%s</b></a> ：%s' % (item['num'], item['mail'], item['name'], item['dd']))
-            f.write('<p>%s</p>' % item['body'])
-            f.write(']]></description>')
-            f.write('</item>')
-        f.write('</channel>')
-        f.write('</rss>')
-        return f.getvalue().encode('utf-8')
+@dmemcache(0)
+def dat2atom1(server, board, thread, content, lastmodified, limit):
+    title, items = parse_dat(server, board, thread, content, limit)
+    f = StringIO.StringIO()
+    f.write('<?xml version="1.0" encoding="utf-8"?>')
+    f.write('<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="ja">')
+    f.write('<title>%s</title>' % title)
+    f.write('<author><name></name></author>')
+    f.write('<link href="http://%s/test/read.cgi/%s/%s/" />' % (server, board, thread))
+    f.write('<id>http://%s/test/read.cgi/%s/%s/</id>' % (server, board, thread))
+    f.write('<updated>%s</updated>' % lastmodified.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    for item in items:
+        f.write('<entry>')
+        f.write('<title>%s</title>' % item['num'])
+        f.write('<link href="http://%s/test/read.cgi/%s/%s/%s" />' % (server, board, thread, item['num']))
+        f.write('<id>http://%s/test/read.cgi/%s/%s/%s</id>' % (server, board, thread, item['num']))
+        f.write('<updated>%s</updated>' % item['date'].strftime("%Y-%m-%dT%H:%M:%SZ"))
+        f.write('<content type="html"><![CDATA[')
+        if item['mail'] == '':
+            f.write(u'%s 名前：<b>%s</b> ：%s' % (item['num'], item['name'], item['dd']))
+        else:
+            f.write(u'%s 名前：<a href="mailto:%s"><b>%s</b></a> ：%s' % (item['num'], item['mail'], item['name'], item['dd']))
+        f.write('<p>%s</p>' % item['body'])
+        f.write(']]></content>')
+        f.write('</entry>')
+    f.write('</feed>')
+    return f.getvalue().encode('utf-8')
 
-class Thread2Atom1(Thread2Rss):
-    def content_type(self):
-        return "application/atom+xml"
+@dmemcache(config.thread_cache_time)
+def thread2atom1(server, board, thread, limit):
+    url = "http://%s/%s/dat/%s.dat" % (server, board, thread)
+    uc = get_url(url)
+    rss = dat2atom1(server, board, thread, uc.content.decode("cp932", "replace"), uc.lastmodified, limit)
+    return rss
 
-    def render(self, server, board, thread, items, lastmodified, title):
-        f = StringIO.StringIO()
-        f.write('<?xml version="1.0" encoding="utf-8"?>')
-        f.write('<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="ja">')
-        f.write('<title>%s</title>' % title)
-        f.write('<author><name></name></author>')
-        f.write('<link href="http://%s/test/read.cgi/%s/%s/" />' % (server, board, thread))
-        f.write('<id>http://%s/test/read.cgi/%s/%s/</id>' % (server, board, thread))
-        f.write('<updated>%s</updated>' % lastmodified.strftime("%Y-%m-%dT%H:%M:%SZ"))
-        for item in items:
-            f.write('<entry>')
-            f.write('<title>%s</title>' % item['num'])
-            f.write('<link href="http://%s/test/read.cgi/%s/%s/%s" />' % (server, board, thread, item['num']))
-            f.write('<id>http://%s/test/read.cgi/%s/%s/%s</id>' % (server, board, thread, item['num']))
+@dmemcache(0)
+def dat2rss2(server, board, thread, content, lastmodified, limit):
+    title, items = parse_dat(server, board, thread, content, limit)
+    f = StringIO.StringIO()
+    f.write('<?xml version="1.0" encoding="utf-8"?>')
+    f.write('<rss version="2.0">')
+    f.write('<channel>')
+    f.write('<title>%s</title>' % title)
+    f.write('<link>http://%s/test/read.cgi/%s/%s/</link>' % (server, board, thread))
+    f.write('<description>%s</description>' % title)
+    f.write('<language>ja</language>')
+    f.write('<pubDate>%s</pubDate>' % lastmodified.strftime("%a, %d %b %Y %H:%M:%S GMT"))
+    for item in items:
+        f.write('<item>')
+        f.write('<title>%s</title>' % item['num'])
+        f.write('<link>http://%s/test/read.cgi/%s/%s/%s</link>' % (server, board, thread, item['num']))
+        f.write('<guid isPermaLink="true">http://%s/test/read.cgi/%s/%s/%s</guid>' % (server, board, thread, item['num']))
+        f.write('<pubDate>%s</pubDate>' % item['date'].strftime("%a, %d %b %Y %H:%M:%S GMT"))
+        f.write('<description><![CDATA[')
+        if item['mail'] == '':
+            f.write(u'%s 名前：<b>%s</b> ：%s' % (item['num'], item['name'], item['dd']))
+        else:
+            f.write(u'%s 名前：<a href="mailto:%s"><b>%s</b></a> ：%s' % (item['num'], item['mail'], item['name'], item['dd']))
+        f.write('<p>%s</p>' % item['body'])
+        f.write(']]></description>')
+        f.write('</item>')
+    f.write('</channel>')
+    f.write('</rss>')
+    return f.getvalue().encode('utf-8')
+
+@dmemcache(config.thread_cache_time)
+def thread2rss2(server, board, thread, limit):
+    url = "http://%s/%s/dat/%s.dat" % (server, board, thread)
+    uc = get_url(url)
+    rss = dat2rss2(server, board, thread, uc.content.decode("cp932", "replace"), uc.lastmodified, limit)
+    return rss
+
+def parse_subject(server, board, content, limit):
+    def parse_line(line):
+        datfile, title = re.split("<>", line)
+        thread = re.sub(r"^(\d+)\.dat", r"\1", datfile)
+        title = re.sub(r"\s*\(\d+\)$", "", title)
+        if thread.startswith("924"):
+            # may be a special number for ad.  (e.g. "924%y%m%d", "924%y%m%d1")
+            date = None
+        else:
+            date = datetime.datetime.fromtimestamp(int(thread))
+        return {
+            "thread" : thread,
+            "title" : title,
+            "date" : date,
+        }
+    lines = content.splitlines()
+    return (parse_line(lines[i]) for i in range(min(len(lines), limit)))
+
+@dmemcache(0)
+def subject2atom1(server, board, content, lastmodified, limit):
+    items = parse_subject(server, board, content, limit)
+    title = get_board_title(server, board)
+    f = StringIO.StringIO()
+    f.write('<?xml version="1.0" encoding="utf-8"?>')
+    f.write('<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="ja">')
+    f.write('<title>%s</title>' % title)
+    f.write('<author><name></name></author>')
+    f.write('<link href="http://%s/%s/" />' % (server, board))
+    f.write('<id>http://%s/%s/</id>' % (server, board))
+    f.write('<updated>%s</updated>' % lastmodified.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    for item in items:
+        f.write('<entry>')
+        f.write('<title>%s</title>' % item['title'])
+        f.write('<link href="http://%s/test/read.cgi/%s/%s/" />' % (server, board, item['thread']))
+        f.write('<id>http://%s/test/read.cgi/%s/%s/</id>' % (server, board, item['thread']))
+        if item['date']:
             f.write('<updated>%s</updated>' % item['date'].strftime("%Y-%m-%dT%H:%M:%SZ"))
-            f.write('<content type="html"><![CDATA[')
-            if config.thread_show_head:
-                if item['mail'] == '':
-                    f.write(u'%s 名前：<b>%s</b> ：%s' % (item['num'], item['name'], item['dd']))
-                else:
-                    f.write(u'%s 名前：<a href="mailto:%s"><b>%s</b></a> ：%s' % (item['num'], item['mail'], item['name'], item['dd']))
-            f.write('<p>%s</p>' % item['body'])
-            f.write(']]></content>')
-            f.write('</entry>')
-        f.write('</feed>')
-        return f.getvalue().encode('utf-8')
+        f.write('</entry>')
+    f.write('</feed>')
+    return f.getvalue().encode('utf-8')
 
-class Board2Rss:
-    def get(self, server, board):
-        if (not re.match(config.filter_server, server)
-                or not re.match(config.filter_board, board)):
-            raise Exception("Validate")
-        url = "http://%s/%s/subject.txt" % (server, board)
-        rss = memcache.get(url)
-        if isinstance(rss, Exception):
-            raise Exception("CachedError", rss)
-        if rss is None:
-            try:
-                f_2rss = lambda uc: self.subject2rss(server, board, uc.content.decode("cp932", "replace"), uc.lastmodified)
-                uc = get_url(url, f_2rss)
-                rss = uc.rss
-                memcache.add(url, rss, time=config.board_cache_time)
-            except Exception, e:
-                memcache.add(url, e, time=config.error_cache_time)
-                raise
-        return rss
+@dmemcache(config.board_cache_time)
+def board2atom1(server, board, limit):
+    url = "http://%s/%s/subject.txt" % (server, board)
+    uc = get_url(url)
+    rss = subject2atom1(server, board, uc.content.decode("cp932", "replace"), uc.lastmodified, limit)
+    return rss
 
-    def subject2rss(self, server, board, content, lastmodified):
-        items = list(self.parse(content))
-        items.sort(key = lambda x: int(x["thread"]), reverse=True)
-        if config.board_max_items > 0:
-            items = items[ : config.board_max_items]
-        title = get_title(server, board)
-        return self.render(server, board, items, lastmodified, title)
+@dmemcache(0)
+def subject2rss2(server, board, content, lastmodified, limit):
+    items = parse_subject(server, board, content, limit)
+    title = get_board_title(server, board)
+    f = StringIO.StringIO()
+    f.write('<?xml version="1.0" encoding="utf-8"?>')
+    f.write('<rss version="2.0">')
+    f.write('<channel>')
+    f.write('<title>%s</title>' % title)
+    f.write('<link>http://%s/%s/</link>' % (server, board))
+    f.write('<description>%s</description>' % title)
+    f.write('<language>ja</language>')
+    f.write('<pubDate>%s</pubDate>' % lastmodified.strftime("%a, %d %b %Y %H:%M:%S GMT"))
+    for item in items:
+        f.write('<item>')
+        f.write('<title>%s</title>' % item['title'])
+        f.write('<link>http://%s/test/read.cgi/%s/%s/</link>' % (server, board, item['thread']))
+        f.write('<guid isPermaLink="true">http://%s/test/read.cgi/%s/%s/</guid>' % (server, board, item['thread']))
+        if item['date']:
+            f.write('<pubDate>%s</pubDate>' % item['date'].strftime("%a, %d %b %Y %H:%M:%S GMT"))
+        f.write('</item>')
+    f.write('</channel>')
+    f.write('</rss>')
+    return f.getvalue().encode('utf-8')
 
-    def parse(self, content):
-        for line in content.splitlines():
-            datfile, title = re.split("<>", line)
-            thread = re.sub(r"^(\d+)\.dat", r"\1", datfile)
-            title = re.sub(r"\s*\(\d+\)$", "", title)
-            if thread.startswith("924"):
-                # may be a special number for ad.  (e.g. "924%y%m%d", "924%y%m%d1")
-                date = None
-            else:
-                date = datetime.datetime.fromtimestamp(int(thread))
-            yield {
-                "thread" : thread,
-                "title" : title,
-                "date" : date,
-            }
-
-class Board2Rss2(Board2Rss):
-    def content_type(self):
-        return "application/rss+xml"
-
-    def render(self, server, board, items, lastmodified, title):
-        f = StringIO.StringIO()
-        f.write('<?xml version="1.0" encoding="utf-8"?>')
-        f.write('<rss version="2.0">')
-        f.write('<channel>')
-        f.write('<title>%s</title>' % title)
-        f.write('<link>http://%s/%s/</link>' % (server, board))
-        f.write('<description>%s</description>' % title)
-        f.write('<language>ja</language>')
-        f.write('<pubDate>%s</pubDate>' % lastmodified.strftime("%a, %d %b %Y %H:%M:%S GMT"))
-        for item in items:
-            f.write('<item>')
-            f.write('<title>%s</title>' % item['title'])
-            f.write('<link>http://%s/test/read.cgi/%s/%s/</link>' % (server, board, item['thread']))
-            f.write('<guid isPermaLink="true">http://%s/test/read.cgi/%s/%s/</guid>' % (server, board, item['thread']))
-            if item['date']:
-                f.write('<pubDate>%s</pubDate>' % item['date'].strftime("%a, %d %b %Y %H:%M:%S GMT"))
-            f.write('</item>')
-        f.write('</channel>')
-        f.write('</rss>')
-        return f.getvalue().encode('utf-8')
-
-class Board2Atom1(Board2Rss):
-    def content_type(self):
-        return "application/atom+xml"
-
-    def render(self, server, board, items, lastmodified, title):
-        f = StringIO.StringIO()
-        f.write('<?xml version="1.0" encoding="utf-8"?>')
-        f.write('<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="ja">')
-        f.write('<title>%s</title>' % title)
-        f.write('<author><name></name></author>')
-        f.write('<link href="http://%s/%s/" />' % (server, board))
-        f.write('<id>http://%s/%s/</id>' % (server, board))
-        f.write('<updated>%s</updated>' % lastmodified.strftime("%Y-%m-%dT%H:%M:%SZ"))
-        for item in items:
-            f.write('<entry>')
-            f.write('<title>%s</title>' % item['title'])
-            f.write('<link href="http://%s/test/read.cgi/%s/%s/" />' % (server, board, item['thread']))
-            f.write('<id>http://%s/test/read.cgi/%s/%s/</id>' % (server, board, item['thread']))
-            if item['date']:
-                f.write('<updated>%s</updated>' % item['date'].strftime("%Y-%m-%dT%H:%M:%SZ"))
-            f.write('</entry>')
-        f.write('</feed>')
-        return f.getvalue().encode('utf-8')
+@dmemcache(config.board_cache_time)
+def board2rss2(server, board, limit):
+    url = "http://%s/%s/subject.txt" % (server, board)
+    uc = get_url(url)
+    rss = subject2rss2(server, board, uc.content.decode("cp932", "replace"), uc.lastmodified, limit)
+    return rss
 
 class AIndex(webapp.RequestHandler):
     def get(self):
         url = self.request.get("url")
+        limit = self.request.get("limit")
+
+        if limit != "" and not re.match(r"^\d{1,4}$", limit):
+            raise Exception("Validate")
 
         if url == "":
             template_values = {"root":self.request.url}
@@ -314,17 +303,39 @@ class AIndex(webapp.RequestHandler):
 
         m = re.match(r"http://([^/]+)/test/read\.cgi/(\w+)/(\d+)/", url)
         if m:
-            c = Thread2Atom1()
-            rss = c.get(m.group(1), m.group(2), m.group(3))
-            self.response.headers["Content-Type"] = c.content_type()
+            server = m.group(1)
+            board = m.group(2)
+            thread = m.group(3)
+            if (not re.match(config.filter_server, server)
+                    or not re.match(config.filter_board, board)
+                    or not re.match(r"^\d+$", thread)):
+                raise Exception("Validate")
+            if limit != "":
+                limit = int(limit)
+                if limit >= config.thread_limit:
+                    limit = config.thread_limit
+            else:
+                limit = config.thread_limit
+            rss = thread2atom1(server, board, thread, limit)
+            self.response.headers["content-type"] = "application/atom+xml"
             self.response.out.write(rss)
             return
 
         m = re.match(r"http://([^/]+)/(\w+)/", url)
         if m:
-            c = Board2Atom1()
-            rss = c.get(m.group(1), m.group(2))
-            self.response.headers["Content-Type"] = c.content_type()
+            server = m.group(1)
+            board = m.group(2)
+            if (not re.match(config.filter_server, server)
+                    or not re.match(config.filter_board, board)):
+                raise Exception("Validate")
+            if limit != "":
+                limit = int(limit)
+                if limit >= config.board_limit:
+                    limit = config.board_limit
+            else:
+                limit = config.board_limit
+            rss = board2atom1(server, board, limit)
+            self.response.headers["content-type"] = "application/atom+xml"
             self.response.out.write(rss)
             return
 
