@@ -22,19 +22,22 @@ class UrlCache(db.Model):
     lastmodified = db.DateTimeProperty()
     lastaccess = db.DateTimeProperty()
 
-def dmemcache(time):
+def dmemcache(time, keyfmt=None):
     def deco(f):
         def wrap(*args):
-            key = "%s:%s" % (f.__name__, args)
-            v = memcache.get(key)
+            if keyfmt is None:
+                key = str(args)
+            else:
+                key = keyfmt(args)
+            v = memcache.get(key, namespace=f.__name__)
             if isinstance(v, Exception):
                 raise Exception("CachedError", v)
             if v is None:
                 try:
                     v = f(*args)
-                    memcache.add(key, v, time=time)
+                    memcache.add(key, v, time=time, namespace=f.__name__)
                 except Exception, e:
-                    memcache.add(key, e, time=config.error_cache_time)
+                    memcache.add(key, e, time=config.error_cache_time, namespace=f.__name__)
                     raise
             else:
                 logging.info("cached: " + f.__name__)
@@ -136,7 +139,7 @@ def parse_dat(server, board, thread, content, limit):
         (parse_line(str(i + 1), lines[i]) for i in range(len(lines) - 1, max(len(lines) - limit, 0) - 1, -1))
     )
 
-@dmemcache(0)
+@dmemcache(0, lambda args: str(tuple(args[i] for i in (0, 1, 2, 4, 5))))
 def dat2atom1(server, board, thread, content, lastmodified, limit):
     title, items = parse_dat(server, board, thread, content, limit)
     f = StringIO.StringIO()
@@ -171,7 +174,7 @@ def thread2atom1(server, board, thread, limit):
     rss = dat2atom1(server, board, thread, uc.content.decode("cp932", "replace"), uc.lastmodified, limit)
     return rss
 
-@dmemcache(0)
+@dmemcache(0, lambda args: str(tuple(args[i] for i in (0, 1, 2, 4, 5))))
 def dat2rss2(server, board, thread, content, lastmodified, limit):
     title, items = parse_dat(server, board, thread, content, limit)
     f = StringIO.StringIO()
@@ -226,7 +229,7 @@ def parse_subject(server, board, content, limit):
     lines = content.splitlines()
     return (parse_line(lines[i]) for i in range(min(len(lines), limit)))
 
-@dmemcache(0)
+@dmemcache(0, lambda args: str(tuple(args[i] for i in (0, 1, 3, 4))))
 def subject2atom1(server, board, content, lastmodified, limit):
     items = parse_subject(server, board, content, limit)
     title = get_board_title(server, board)
@@ -256,7 +259,7 @@ def board2atom1(server, board, limit):
     rss = subject2atom1(server, board, uc.content.decode("cp932", "replace"), uc.lastmodified, limit)
     return rss
 
-@dmemcache(0)
+@dmemcache(0, lambda args: str(tuple(args[i] for i in (0, 1, 3, 4))))
 def subject2rss2(server, board, content, lastmodified, limit):
     items = parse_subject(server, board, content, limit)
     title = get_board_title(server, board)
@@ -294,7 +297,7 @@ class AIndex(webapp.RequestHandler):
         limit = self.request.get("limit")
 
         if limit != "" and not re.match(r"^\d{1,4}$", limit):
-            raise Exception("Validate")
+            raise Exception("ValidationError", limit)
 
         if url == "":
             template_values = {"root":self.request.url}
@@ -309,7 +312,7 @@ class AIndex(webapp.RequestHandler):
             if (not re.match(config.filter_server, server)
                     or not re.match(config.filter_board, board)
                     or not re.match(r"^\d+$", thread)):
-                raise Exception("Validate")
+                raise Exception("ValidationError", url)
             if limit != "":
                 limit = int(limit)
                 if limit >= config.thread_limit:
@@ -327,7 +330,7 @@ class AIndex(webapp.RequestHandler):
             board = m.group(2)
             if (not re.match(config.filter_server, server)
                     or not re.match(config.filter_board, board)):
-                raise Exception("Validate")
+                raise Exception("ValidationError", url)
             if limit != "":
                 limit = int(limit)
                 if limit >= config.board_limit:
@@ -339,7 +342,15 @@ class AIndex(webapp.RequestHandler):
             self.response.out.write(rss)
             return
 
-        raise Exception("Validate")
+        raise Exception("ValidationError", url)
+
+    def handle_exception(self, exception, debug_mode):
+        if debug_mode:
+            webapp.RequestHandler.handle_exception(self, exception, debug_mode)
+        else:
+            logging.exception(exception)
+            self.error(500)
+            self.response.out.write(exception)
 
 class AClean(webapp.RequestHandler):
     def get(self):
