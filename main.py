@@ -230,7 +230,15 @@ def parse_subject(server, board, content, limit):
     items.sort(key = lambda x: int(x["thread"]), reverse=True)
     return items[ : limit]
 
-@dmemcache(0, lambda args: str(tuple(args[i] for i in (0, 1, 3, 4))))
+def subjectkey(args):
+    # line is "1234567890.dat<>......"
+    # int(x[:x.index('.')])
+    # use literal value for speed
+    atdot = 10
+    thread = max(int(x[:atdot]) for x in args[2].splitlines() if not x.startswith("924"))
+    return str((args[0], args[1], thread, args[4]))
+
+@dmemcache(0, subjectkey)
 def subject2atom1(server, board, content, lastmodified, limit):
     items = parse_subject(server, board, content, limit)
     title = get_board_title(server, board)
@@ -260,7 +268,7 @@ def board2atom1(server, board, limit):
     rss = subject2atom1(server, board, uc.content.decode("cp932", "replace"), uc.lastmodified, limit)
     return rss
 
-@dmemcache(0, lambda args: str(tuple(args[i] for i in (0, 1, 3, 4))))
+@dmemcache(0, subjectkey)
 def subject2rss2(server, board, content, lastmodified, limit):
     items = parse_subject(server, board, content, limit)
     title = get_board_title(server, board)
