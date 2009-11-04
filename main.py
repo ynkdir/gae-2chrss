@@ -226,8 +226,9 @@ def parse_subject(server, board, content, limit):
             "title" : title,
             "date" : date,
         }
-    lines = content.splitlines()
-    return (parse_line(lines[i]) for i in range(min(len(lines), limit)))
+    items = list(parse_line(line) for line in content.splitlines())
+    items.sort(key = lambda x: int(x["thread"]), reverse=True)
+    return items[ : limit]
 
 @dmemcache(0, lambda args: str(tuple(args[i] for i in (0, 1, 3, 4))))
 def subject2atom1(server, board, content, lastmodified, limit):
