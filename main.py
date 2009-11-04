@@ -221,7 +221,7 @@ def parse_subject(server, board, content):
         try:
             date = datetime.datetime.fromtimestamp(int(thread))
             if date > datetime.datetime.utcnow():
-                raise "Exception"
+                raise ValueError()
         except:
             # may be a special number for ad.  (e.g. "924%y%m%d", "924%y%m%d1")
             date = datetime.datetime.fromtimestamp(0)
