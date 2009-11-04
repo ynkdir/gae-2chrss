@@ -231,11 +231,8 @@ def parse_subject(server, board, content, limit):
     return items[ : limit]
 
 def subjectkey(args):
-    # line is "1234567890.dat<>......"
-    # int(x[:x.index('.')])
-    # use literal value for speed
     atdot = 10
-    thread = max(int(x[:atdot]) for x in args[2].splitlines() if not x.startswith("924"))
+    thread = max(int(x[:x.index('.')]) for x in args[2].splitlines() if not x.startswith("924"))
     return str((args[0], args[1], thread, args[4]))
 
 @dmemcache(0, subjectkey)
