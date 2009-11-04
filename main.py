@@ -22,13 +22,10 @@ class UrlCache(db.Model):
     lastmodified = db.DateTimeProperty()
     lastaccess = db.DateTimeProperty()
 
-def dmemcache(time, keyfmt=None):
+def dmemcache(time):
     def deco(f):
         def wrap(*args):
-            if keyfmt is None:
-                key = str(args)
-            else:
-                key = keyfmt(args)
+            key = str(args)
             v = memcache.get(key, namespace=f.__name__)
             if isinstance(v, Exception):
                 raise Exception("CachedError", v)
@@ -76,6 +73,7 @@ def get_url(url):
 
     return uc
 
+@dmemcache(0)
 def get_board_title(server, board):
     url = "http://%s/%s/SETTING.TXT" % (server, board)
     uc = get_url(url)
@@ -89,7 +87,14 @@ def get_board_title(server, board):
         title = board
     return title
 
-def parse_dat(server, board, thread, content, limit):
+def truncate(items, limit):
+    if isinstance(limit, int):
+        return items[:limit]
+    elif isinstance(limit, datetime.datetime):
+        return [item for item in items if item["date"] >= limit]
+    return items
+
+def parse_dat(server, board, thread, content):
     def linkrepl(m):
         s = m.group(1)
         p = m.group(2)
@@ -99,10 +104,12 @@ def parse_dat(server, board, thread, content, limit):
             s = 'https'
         return '<a href="%s://%s">%s://%s</a>' % (s, p, m.group(1), p)
 
-    def parse_line(num, line):
+    # save previous date for error
+    def parse_line(num, line, prev=[datetime.datetime.fromtimestamp(0)]):
         name, mail, dd, body, title = re.split("<>", line)
         body = re.sub(r'(http|ttp|https|ttps|ftp)://([\x21\x23-\x7E]+)', linkrepl, body)
         body = re.sub(r'(<a [^>]*href=")../test/', r'\1http://%s/test/' % server, body)
+        date = prev[0]
         m = re.match(r"(?P<year>\d+)/(?P<month>\d+)/(?P<day>\d+)\(.\) (?P<hour>\d+):(?P<minute>\d+):(?P<second>\d+)", dd)
         if m:
             try:
@@ -119,9 +126,7 @@ def parse_dat(server, board, thread, content, limit):
             except ValueError:
                 # It can be an invalid date
                 logging.info(dd)
-                date = datetime.datetime.utcnow()
-        else:
-            date = datetime.datetime.utcnow()
+        prev[0] = date
         return {
             'num' : num,
             'name' : name,
@@ -132,16 +137,11 @@ def parse_dat(server, board, thread, content, limit):
             'title' : title,
         }
 
-    lines = content.splitlines()
-    first = parse_line("1", lines[0])
-    return (
-        first['title'],
-        (parse_line(str(i + 1), lines[i]) for i in range(len(lines) - 1, max(len(lines) - limit, 0) - 1, -1))
-    )
+    items = [parse_line(str(i + 1), line) for i, line in enumerate(content.splitlines())]
+    items.reverse()
+    return (items[-1]["title"], items)
 
-@dmemcache(0, lambda args: str(tuple(args[i] for i in (0, 1, 2, 4, 5))))
-def dat2atom1(server, board, thread, content, lastmodified, limit):
-    title, items = parse_dat(server, board, thread, content, limit)
+def dat2atom1(server, board, thread, items, title, lastmodified):
     f = StringIO.StringIO()
     f.write('<?xml version="1.0" encoding="utf-8"?>')
     f.write('<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="ja">')
@@ -171,12 +171,12 @@ def dat2atom1(server, board, thread, content, lastmodified, limit):
 def thread2atom1(server, board, thread, limit):
     url = "http://%s/%s/dat/%s.dat" % (server, board, thread)
     uc = get_url(url)
-    rss = dat2atom1(server, board, thread, uc.content.decode("cp932", "replace"), uc.lastmodified, limit)
+    title, items = parse_dat(server, board, thread, uc.content.decode("cp932", "replace"))
+    items = truncate(items, limit)
+    rss = dat2atom1(server, board, thread, items, title, uc.lastmodified)
     return rss
 
-@dmemcache(0, lambda args: str(tuple(args[i] for i in (0, 1, 2, 4, 5))))
-def dat2rss2(server, board, thread, content, lastmodified, limit):
-    title, items = parse_dat(server, board, thread, content, limit)
+def dat2rss2(server, board, thread, items, title, lastmodified):
     f = StringIO.StringIO()
     f.write('<?xml version="1.0" encoding="utf-8"?>')
     f.write('<rss version="2.0">')
@@ -208,37 +208,31 @@ def dat2rss2(server, board, thread, content, lastmodified, limit):
 def thread2rss2(server, board, thread, limit):
     url = "http://%s/%s/dat/%s.dat" % (server, board, thread)
     uc = get_url(url)
-    rss = dat2rss2(server, board, thread, uc.content.decode("cp932", "replace"), uc.lastmodified, limit)
+    title, items = parse_dat(server, board, thread, uc.content.decode("cp932", "replace"))
+    items = truncate(items, limit)
+    rss = dat2rss2(server, board, thread, items, title, uc.lastmodified)
     return rss
 
-def parse_subject(server, board, content, limit):
+def parse_subject(server, board, content):
     def parse_line(line):
         datfile, title = re.split("<>", line)
         thread = re.sub(r"^(\d+)\.dat", r"\1", datfile)
         title = re.sub(r"\s*\(\d+\)$", "", title)
-        if thread.startswith("924"):
-            # may be a special number for ad.  (e.g. "924%y%m%d", "924%y%m%d1")
-            date = None
-        else:
+        try:
             date = datetime.datetime.fromtimestamp(int(thread))
+        except:
+            # may be a special number for ad.  (e.g. "924%y%m%d", "924%y%m%d1")
+            date = datetime.datetime.fromtimestamp(0)
         return {
             "thread" : thread,
             "title" : title,
             "date" : date,
         }
-    items = list(parse_line(line) for line in content.splitlines())
-    items.sort(key = lambda x: int(x["thread"]), reverse=True)
-    return items[ : limit]
+    items = [parse_line(line) for line in content.splitlines()]
+    items.sort(key = lambda x: x["date"], reverse=True)
+    return items
 
-def subjectkey(args):
-    atdot = 10
-    thread = max(int(x[:x.index('.')]) for x in args[2].splitlines() if not x.startswith("924"))
-    return str((args[0], args[1], thread, args[4]))
-
-@dmemcache(0, subjectkey)
-def subject2atom1(server, board, content, lastmodified, limit):
-    items = parse_subject(server, board, content, limit)
-    title = get_board_title(server, board)
+def subject2atom1(server, board, items, title, lastmodified):
     f = StringIO.StringIO()
     f.write('<?xml version="1.0" encoding="utf-8"?>')
     f.write('<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="ja">')
@@ -262,13 +256,13 @@ def subject2atom1(server, board, content, lastmodified, limit):
 def board2atom1(server, board, limit):
     url = "http://%s/%s/subject.txt" % (server, board)
     uc = get_url(url)
-    rss = subject2atom1(server, board, uc.content.decode("cp932", "replace"), uc.lastmodified, limit)
+    items = parse_subject(server, board, uc.content.decode("cp932", "replace"))
+    items = truncate(items, limit)
+    title = get_board_title(server, board)
+    rss = subject2atom1(server, board, items, title, uc.lastmodified)
     return rss
 
-@dmemcache(0, subjectkey)
-def subject2rss2(server, board, content, lastmodified, limit):
-    items = parse_subject(server, board, content, limit)
-    title = get_board_title(server, board)
+def subject2rss2(server, board, items, title, lastmodified):
     f = StringIO.StringIO()
     f.write('<?xml version="1.0" encoding="utf-8"?>')
     f.write('<rss version="2.0">')
@@ -294,7 +288,10 @@ def subject2rss2(server, board, content, lastmodified, limit):
 def board2rss2(server, board, limit):
     url = "http://%s/%s/subject.txt" % (server, board)
     uc = get_url(url)
-    rss = subject2rss2(server, board, uc.content.decode("cp932", "replace"), uc.lastmodified, limit)
+    items = parse_subject(server, board, uc.content.decode("cp932", "replace"))
+    items = truncate(items, limit)
+    title = get_board_title(server, board)
+    rss = subject2rss2(server, board, items, title, uc.lastmodified)
     return rss
 
 class AIndex(webapp.RequestHandler):
@@ -302,7 +299,20 @@ class AIndex(webapp.RequestHandler):
         url = self.request.get("url")
         limit = self.request.get("limit")
 
-        if limit != "" and not re.match(r"^\d{1,4}$", limit):
+        if limit == "":
+            limit = config.limit
+        elif re.match(r"^\d{1,4}$", limit):
+            limit = int(limit)
+        elif re.match(r"^(\d{1,3})\s*hours?", limit):
+            hours = int(re.match(r"^\d+", limit).group(0))
+            limit = datetime.datetime.utcnow() - datetime.timedelta(hours=hours)
+        elif re.match(r"^(\d{1,3})\s*days?", limit):
+            days = int(re.match(r"^\d+", limit).group(0))
+            limit = datetime.datetime.utcnow() - datetime.timedelta(days=days)
+        elif re.match(r"^(\d{1,3})\s*weeks?", limit):
+            weeks = int(re.match(r"^\d+", limit).group(0))
+            limit = datetime.datetime.utcnow() - datetime.timedelta(weeks=weeks)
+        else:
             raise Exception("ValidationError", limit)
 
         if url == "":
@@ -319,12 +329,6 @@ class AIndex(webapp.RequestHandler):
                     or not re.match(config.filter_board, board)
                     or not re.match(r"^\d+$", thread)):
                 raise Exception("ValidationError", url)
-            if limit != "":
-                limit = int(limit)
-                if limit >= config.thread_limit:
-                    limit = config.thread_limit
-            else:
-                limit = config.thread_limit
             rss = thread2atom1(server, board, thread, limit)
             self.response.headers["content-type"] = "application/atom+xml"
             self.response.out.write(rss)
@@ -337,12 +341,6 @@ class AIndex(webapp.RequestHandler):
             if (not re.match(config.filter_server, server)
                     or not re.match(config.filter_board, board)):
                 raise Exception("ValidationError", url)
-            if limit != "":
-                limit = int(limit)
-                if limit >= config.board_limit:
-                    limit = config.board_limit
-            else:
-                limit = config.board_limit
             rss = board2atom1(server, board, limit)
             self.response.headers["content-type"] = "application/atom+xml"
             self.response.out.write(rss)
