@@ -2,6 +2,7 @@ debug = False
 filter_server = '^\w+\.2ch\.net$'
 filter_board = '^.*$'
 limit = None
+get_url_cache_time = 30 * 60
 thread_cache_time = 30 * 60
 board_cache_time = 30 * 60
 error_cache_time = 10 * 60

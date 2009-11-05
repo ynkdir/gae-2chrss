@@ -46,6 +46,7 @@ def render(template_file, template_values):
     path = os.path.join(os.path.dirname(__file__), "templates", template_file)
     return template.render(path, template_values)
 
+@dmemcache(config.get_url_cache_time)
 def get_url(url):
     uc = UrlCache.get_by_key_name(url)
 
