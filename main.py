@@ -87,11 +87,11 @@ def get_board_title(server, board):
         title = board
     return title
 
-def truncate(items, limit):
-    if isinstance(limit, int):
-        return items[:limit]
-    elif isinstance(limit, datetime.datetime):
-        return [item for item in items if item["date"] >= limit]
+def truncate(items, limit, time):
+    if time is not None:
+        items = [item for item in items if item["date"] >= time]
+    if limit is not None:
+        items = items[:limit]
     return items
 
 def parse_dat(server, board, thread, content):
@@ -168,11 +168,11 @@ def dat2atom1(server, board, thread, items, title, lastmodified):
     return f.getvalue().encode('utf-8')
 
 @dmemcache(config.thread_cache_time)
-def thread2atom1(server, board, thread, limit):
+def thread2atom1(server, board, thread, limit, time):
     url = "http://%s/%s/dat/%s.dat" % (server, board, thread)
     uc = get_url(url)
     title, items = parse_dat(server, board, thread, uc.content.decode("cp932", "replace"))
-    items = truncate(items, limit)
+    items = truncate(items, limit, time)
     rss = dat2atom1(server, board, thread, items, title, uc.lastmodified)
     return rss
 
@@ -205,11 +205,11 @@ def dat2rss2(server, board, thread, items, title, lastmodified):
     return f.getvalue().encode('utf-8')
 
 @dmemcache(config.thread_cache_time)
-def thread2rss2(server, board, thread, limit):
+def thread2rss2(server, board, thread, limit, time):
     url = "http://%s/%s/dat/%s.dat" % (server, board, thread)
     uc = get_url(url)
     title, items = parse_dat(server, board, thread, uc.content.decode("cp932", "replace"))
-    items = truncate(items, limit)
+    items = truncate(items, limit, time)
     rss = dat2rss2(server, board, thread, items, title, uc.lastmodified)
     return rss
 
@@ -255,11 +255,11 @@ def subject2atom1(server, board, items, title, lastmodified):
     return f.getvalue().encode('utf-8')
 
 @dmemcache(config.board_cache_time)
-def board2atom1(server, board, limit):
+def board2atom1(server, board, limit, time):
     url = "http://%s/%s/subject.txt" % (server, board)
     uc = get_url(url)
     items = parse_subject(server, board, uc.content.decode("cp932", "replace"))
-    items = truncate(items, limit)
+    items = truncate(items, limit, time)
     title = get_board_title(server, board)
     rss = subject2atom1(server, board, items, title, uc.lastmodified)
     return rss
@@ -287,11 +287,11 @@ def subject2rss2(server, board, items, title, lastmodified):
     return f.getvalue().encode('utf-8')
 
 @dmemcache(config.board_cache_time)
-def board2rss2(server, board, limit):
+def board2rss2(server, board, limit, time):
     url = "http://%s/%s/subject.txt" % (server, board)
     uc = get_url(url)
     items = parse_subject(server, board, uc.content.decode("cp932", "replace"))
-    items = truncate(items, limit)
+    items = truncate(items, limit, time)
     title = get_board_title(server, board)
     rss = subject2rss2(server, board, items, title, uc.lastmodified)
     return rss
@@ -300,22 +300,30 @@ class AIndex(webapp.RequestHandler):
     def get(self):
         url = self.request.get("url")
         limit = self.request.get("limit")
+        time = self.request.get("time")
 
         if limit == "":
             limit = config.limit
         elif re.match(r"^\d{1,4}$", limit):
             limit = int(limit)
-        elif re.match(r"^(\d{1,3})\s*hours?", limit):
-            hours = int(re.match(r"^\d+", limit).group(0))
-            limit = datetime.datetime.utcnow() - datetime.timedelta(hours=hours)
-        elif re.match(r"^(\d{1,3})\s*days?", limit):
-            days = int(re.match(r"^\d+", limit).group(0))
-            limit = datetime.datetime.utcnow() - datetime.timedelta(days=days)
-        elif re.match(r"^(\d{1,3})\s*weeks?", limit):
-            weeks = int(re.match(r"^\d+", limit).group(0))
-            limit = datetime.datetime.utcnow() - datetime.timedelta(weeks=weeks)
+            if config.limit is not None and limit > config.limit:
+                limit = config.limit
         else:
             raise Exception("ValidationError", limit)
+
+        if time == "":
+            time = None
+        elif re.match(r"^(\d{1,3})\s*hours?", time):
+            hours = int(re.match(r"^\d+", time).group(0))
+            time = datetime.datetime.utcnow() - datetime.timedelta(hours=hours)
+        elif re.match(r"^(\d{1,3})\s*days?", time):
+            days = int(re.match(r"^\d+", time).group(0))
+            time = datetime.datetime.utcnow() - datetime.timedelta(days=days)
+        elif re.match(r"^(\d{1,3})\s*weeks?", time):
+            weeks = int(re.match(r"^\d+", time).group(0))
+            time = datetime.datetime.utcnow() - datetime.timedelta(weeks=weeks)
+        else:
+            raise Exception("ValidationError", time)
 
         if url == "":
             template_values = {"root":self.request.url}
@@ -331,7 +339,7 @@ class AIndex(webapp.RequestHandler):
                     or not re.match(config.filter_board, board)
                     or not re.match(r"^\d+$", thread)):
                 raise Exception("ValidationError", url)
-            rss = thread2atom1(server, board, thread, limit)
+            rss = thread2atom1(server, board, thread, limit, time)
             self.response.headers["content-type"] = "application/atom+xml"
             self.response.out.write(rss)
             return
@@ -343,7 +351,7 @@ class AIndex(webapp.RequestHandler):
             if (not re.match(config.filter_server, server)
                     or not re.match(config.filter_board, board)):
                 raise Exception("ValidationError", url)
-            rss = board2atom1(server, board, limit)
+            rss = board2atom1(server, board, limit, time)
             self.response.headers["content-type"] = "application/atom+xml"
             self.response.out.write(rss)
             return
