@@ -319,9 +319,17 @@ class AIndex(webapp.RequestHandler):
         elif re.match(r"^(\d{1,3})\s*days?", time):
             days = int(re.match(r"^\d+", time).group(0))
             time = datetime.datetime.utcnow() - datetime.timedelta(days=days)
+            # truncate time part
+            time += datetime.timedelta(hours=9)
+            time = datetime.datetime(time.year, time.month, time.day)
+            time -= datetime.timedelta(hours=9)
         elif re.match(r"^(\d{1,3})\s*weeks?", time):
             weeks = int(re.match(r"^\d+", time).group(0))
             time = datetime.datetime.utcnow() - datetime.timedelta(weeks=weeks)
+            # truncate time part
+            time += datetime.timedelta(hours=9)
+            time = datetime.datetime(time.year, time.month, time.day)
+            time -= datetime.timedelta(hours=9)
         else:
             raise Exception("ValidationError", time)
 
