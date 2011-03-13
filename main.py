@@ -16,11 +16,17 @@ import StringIO
 
 import config
 
+
+class BoardNotFound(Exception):
+    pass
+
+
 class UrlCache(db.Model):
     url = db.StringProperty()
     content = db.BlobProperty()
     lastmodified = db.DateTimeProperty()
     lastaccess = db.DateTimeProperty()
+
 
 def dmemcache(time):
     def deco(f):
@@ -34,7 +40,8 @@ def dmemcache(time):
                     v = f(*args)
                     memcache.add(key, v, time=time, namespace=f.__name__)
                 except Exception, e:
-                    memcache.add(key, e, time=config.error_cache_time, namespace=f.__name__)
+                    memcache.add(key, e, time=config.error_cache_time,
+                            namespace=f.__name__)
                     raise
             else:
                 logging.info("cached: " + f.__name__)
@@ -42,9 +49,11 @@ def dmemcache(time):
         return wrap
     return deco
 
+
 def render(template_file, template_values):
     path = os.path.join(os.path.dirname(__file__), "templates", template_file)
     return template.render(path, template_values)
+
 
 @dmemcache(config.get_url_cache_time)
 def get_url(url):
@@ -52,11 +61,13 @@ def get_url(url):
 
     headers = {}
     if uc:
-        headers["if-modified-since"] = uc.lastmodified.strftime("%a, %d %b %Y %H:%M:%S GMT")
+        headers["if-modified-since"] = \
+                uc.lastmodified.strftime("%a, %d %b %Y %H:%M:%S GMT")
     res = urlfetch.fetch(url=url, headers=headers, follow_redirects=False)
 
     if "last-modified" in res.headers:
-        lastmodified = datetime.datetime.strptime(res.headers["last-modified"], "%a, %d %b %Y %H:%M:%S %Z")
+        lastmodified = datetime.datetime.strptime(
+                res.headers["last-modified"], "%a, %d %b %Y %H:%M:%S %Z")
     else:
         lastmodified = datetime.datetime.utcnow()
 
@@ -74,7 +85,39 @@ def get_url(url):
 
     return uc
 
-@dmemcache(0)
+
+@dmemcache(config.menu_cache_time)
+def get_menu():
+    url = "http://menu.2ch.net/bbsmenu.html"
+    uc = get_url(url)
+    data = uc.content.decode("cp932", "replace")
+    board_list = parse_menu(data)
+    return board_list
+
+
+def parse_menu(data):
+    """
+    @return [[host, board, title], ...]
+    """
+    board_list = []
+    for line in data.splitlines():
+        m = re.match(
+            r"^<A HREF=http://([^.]+\.2ch\.net)/([^/]+)/[^>]*>(.*)</A><br>$",
+            line)
+        if m:
+            board_list.append([m.group(1), m.group(2), m.group(3)])
+    return board_list
+
+
+def get_host_by_board(board):
+    board_list = get_menu()
+    for host, board2, _title in board_list:
+        if board2 == board:
+            return host
+    raise BoardNotFound("board not found: {0}".format(board))
+
+
+@dmemcache(config.board_cache_time)
 def get_board_title(server, board):
     url = "http://%s/%s/SETTING.TXT" % (server, board)
     uc = get_url(url)
@@ -88,6 +131,7 @@ def get_board_title(server, board):
         title = board
     return title
 
+
 def truncate(items, limit, time):
     if time is not None:
         items = [item for item in items if item["date"] >= time]
@@ -95,7 +139,8 @@ def truncate(items, limit, time):
         items = items[:limit]
     return items
 
-def parse_dat(server, board, thread, content):
+
+def parse_dat(server, _board, _thread, content):
     def linkrepl(m):
         s = m.group(1)
         p = m.group(2)
@@ -115,13 +160,12 @@ def parse_dat(server, board, thread, content):
         if m:
             try:
                 date = datetime.datetime(
-                    year = int(m.group("year")),
-                    month = int(m.group("month")),
-                    day = int(m.group("day")),
-                    hour = int(m.group("hour")),
-                    minute = int(m.group("minute")),
-                    second = int(m.group("second"))
-                )
+                    year=int(m.group("year")),
+                    month=int(m.group("month")),
+                    day=int(m.group("day")),
+                    hour=int(m.group("hour")),
+                    minute=int(m.group("minute")),
+                    second=int(m.group("second")))
                 # JST -> GMT
                 date -= datetime.timedelta(hours=9)
             except ValueError:
@@ -129,18 +173,19 @@ def parse_dat(server, board, thread, content):
                 logging.info(dd)
         prev[0] = date
         return {
-            'num' : num,
-            'name' : name,
-            'mail' : mail,
-            'dd' : dd,
-            'date' : date,
-            'body' : body,
-            'title' : title,
+            'num': num,
+            'name': name,
+            'mail': mail,
+            'dd': dd,
+            'date': date,
+            'body': body,
+            'title': title,
         }
 
     items = [parse_line(str(i + 1), line) for i, line in enumerate(content.splitlines())]
     items.reverse()
     return (items[-1]["title"], items)
+
 
 def dat2atom1(server, board, thread, items, title, lastmodified):
     f = StringIO.StringIO()
@@ -168,6 +213,7 @@ def dat2atom1(server, board, thread, items, title, lastmodified):
     f.write('</feed>')
     return f.getvalue().encode('utf-8')
 
+
 @dmemcache(config.thread_cache_time)
 def thread2atom1(server, board, thread, limit, time):
     url = "http://%s/%s/dat/%s.dat" % (server, board, thread)
@@ -176,6 +222,7 @@ def thread2atom1(server, board, thread, limit, time):
     items = truncate(items, limit, time)
     rss = dat2atom1(server, board, thread, items, title, uc.lastmodified)
     return rss
+
 
 def dat2rss2(server, board, thread, items, title, lastmodified):
     f = StringIO.StringIO()
@@ -205,6 +252,7 @@ def dat2rss2(server, board, thread, items, title, lastmodified):
     f.write('</rss>')
     return f.getvalue().encode('utf-8')
 
+
 @dmemcache(config.thread_cache_time)
 def thread2rss2(server, board, thread, limit, time):
     url = "http://%s/%s/dat/%s.dat" % (server, board, thread)
@@ -214,7 +262,8 @@ def thread2rss2(server, board, thread, limit, time):
     rss = dat2rss2(server, board, thread, items, title, uc.lastmodified)
     return rss
 
-def parse_subject(server, board, content):
+
+def parse_subject(_server, _board, content):
     def parse_line(line):
         datfile, title = re.split("<>", line)
         thread = re.sub(r"^(\d+)\.dat", r"\1", datfile)
@@ -223,17 +272,18 @@ def parse_subject(server, board, content):
             date = datetime.datetime.fromtimestamp(int(thread))
             if date > datetime.datetime.utcnow():
                 raise ValueError()
-        except:
+        except ValueError:
             # may be a special number for ad.  (e.g. "924%y%m%d", "924%y%m%d1")
             date = datetime.datetime.fromtimestamp(0)
         return {
-            "thread" : thread,
-            "title" : title,
-            "date" : date,
+            "thread": thread,
+            "title": title,
+            "date": date,
         }
     items = [parse_line(line) for line in content.splitlines()]
-    items.sort(key = lambda x: x["date"], reverse=True)
+    items.sort(key=lambda x: x["date"], reverse=True)
     return items
+
 
 def subject2atom1(server, board, items, title, lastmodified):
     f = StringIO.StringIO()
@@ -255,6 +305,7 @@ def subject2atom1(server, board, items, title, lastmodified):
     f.write('</feed>')
     return f.getvalue().encode('utf-8')
 
+
 @dmemcache(config.board_cache_time)
 def board2atom1(server, board, limit, time):
     url = "http://%s/%s/subject.txt" % (server, board)
@@ -264,6 +315,7 @@ def board2atom1(server, board, limit, time):
     title = get_board_title(server, board)
     rss = subject2atom1(server, board, items, title, uc.lastmodified)
     return rss
+
 
 def subject2rss2(server, board, items, title, lastmodified):
     f = StringIO.StringIO()
@@ -287,6 +339,7 @@ def subject2rss2(server, board, items, title, lastmodified):
     f.write('</rss>')
     return f.getvalue().encode('utf-8')
 
+
 @dmemcache(config.board_cache_time)
 def board2rss2(server, board, limit, time):
     url = "http://%s/%s/subject.txt" % (server, board)
@@ -296,6 +349,7 @@ def board2rss2(server, board, limit, time):
     title = get_board_title(server, board)
     rss = subject2rss2(server, board, items, title, uc.lastmodified)
     return rss
+
 
 class AIndex(webapp.RequestHandler):
     def get(self):
@@ -335,7 +389,7 @@ class AIndex(webapp.RequestHandler):
             raise Exception("ValidationError", time)
 
         if url == "":
-            template_values = {"root":self.request.url}
+            template_values = {"root": self.request.url}
             self.response.out.write(render("index.html", template_values))
             return
 
@@ -348,6 +402,7 @@ class AIndex(webapp.RequestHandler):
                     or not re.match(config.filter_board, board)
                     or not re.match(r"^\d+$", thread)):
                 raise Exception("ValidationError", url)
+            server = get_host_by_board(board)
             rss = thread2atom1(server, board, thread, limit, time)
             self.response.headers["content-type"] = "application/atom+xml"
             self.response.out.write(rss)
@@ -360,6 +415,7 @@ class AIndex(webapp.RequestHandler):
             if (not re.match(config.filter_server, server)
                     or not re.match(config.filter_board, board)):
                 raise Exception("ValidationError", url)
+            server = get_host_by_board(board)
             rss = board2atom1(server, board, limit, time)
             self.response.headers["content-type"] = "application/atom+xml"
             self.response.out.write(rss)
@@ -374,6 +430,7 @@ class AIndex(webapp.RequestHandler):
             logging.exception(exception)
             self.error(500)
             self.response.out.write(exception)
+
 
 class AClean(webapp.RequestHandler):
     def get(self):
@@ -391,6 +448,7 @@ application = webapp.WSGIApplication(
      ('/clean', AClean),
     ],
     debug=config.debug)
+
 
 def main():
     run_wsgi_app(application)
