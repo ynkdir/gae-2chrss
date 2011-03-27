@@ -17,7 +17,7 @@ import StringIO
 import config
 
 
-class BoardNotFound(Exception):
+class NotFoundError(Exception):
     pass
 
 
@@ -33,7 +33,10 @@ def dmemcache(time):
         def wrap(*args):
             key = str(args)
             v = memcache.get(key, namespace=f.__name__)
-            if isinstance(v, Exception):
+            if isinstance(v, NotFoundError):
+                logging.info("cached: " + f.__name__)
+                raise v
+            elif isinstance(v, Exception):
                 raise Exception("CachedError", v)
             if v is None:
                 try:
@@ -80,6 +83,10 @@ def get_url(url):
         uc.put()
     elif res.status_code == 304:
         pass
+    elif res.status_code == 302:
+        raise NotFoundError("302 Moved")
+    elif res.status_code == 203:
+        raise NotFoundError("%d Datout" % res.status_code)
     else:
         raise Exception("BadResponse", url, res.status_code)
 
@@ -109,12 +116,29 @@ def parse_menu(data):
     return board_list
 
 
+@dmemcache(config.menu_cache_time)
 def get_host_by_board(board):
     board_list = get_menu()
     for host, board2, _title in board_list:
         if board2 == board:
+            host = resolve_board_move(host, board)
+            if host is None:
+                break
             return host
-    raise BoardNotFound("board not found: {0}".format(board))
+    raise NotFoundError("board not found: %s" % board)
+
+
+def resolve_board_move(host, board, count=5):
+    for _i in range(count):
+        url = "http://%s/%s/" % (host, board)
+        uc = get_url(url)
+        data = uc.content.decode("cp932", "replace")
+        m = re.search(r'window.location.href="http://(.+)/(.+)/"', data)
+        if m:
+            host = m.group(1)
+            continue
+        return host
+    return None
 
 
 @dmemcache(config.board_cache_time)
@@ -218,7 +242,10 @@ def dat2atom1(server, board, thread, items, title, lastmodified):
 def thread2atom1(server, board, thread, limit, time):
     url = "http://%s/%s/dat/%s.dat" % (server, board, thread)
     uc = get_url(url)
-    title, items = parse_dat(server, board, thread, uc.content.decode("cp932", "replace"))
+    data = uc.content.decode("cp932", "replace")
+    if data.startswith("<html>"):
+        raise NotFoundError("200 Moved or Datout")
+    title, items = parse_dat(server, board, thread, data)
     items = truncate(items, limit, time)
     rss = dat2atom1(server, board, thread, items, title, uc.lastmodified)
     return rss
@@ -257,7 +284,10 @@ def dat2rss2(server, board, thread, items, title, lastmodified):
 def thread2rss2(server, board, thread, limit, time):
     url = "http://%s/%s/dat/%s.dat" % (server, board, thread)
     uc = get_url(url)
-    title, items = parse_dat(server, board, thread, uc.content.decode("cp932", "replace"))
+    data = uc.content.decode("cp932", "replace")
+    if data.startswith("<html>"):
+        raise NotFoundError("200 Moved or Datout")
+    title, items = parse_dat(server, board, thread, data)
     items = truncate(items, limit, time)
     rss = dat2rss2(server, board, thread, items, title, uc.lastmodified)
     return rss
@@ -310,7 +340,10 @@ def subject2atom1(server, board, items, title, lastmodified):
 def board2atom1(server, board, limit, time):
     url = "http://%s/%s/subject.txt" % (server, board)
     uc = get_url(url)
-    items = parse_subject(server, board, uc.content.decode("cp932", "replace"))
+    data = uc.content.decode("cp932", "replace")
+    if data.startswith("<html>"):
+        raise NotFoundError("200 BoardMoved")
+    items = parse_subject(server, board, data)
     items = truncate(items, limit, time)
     title = get_board_title(server, board)
     rss = subject2atom1(server, board, items, title, uc.lastmodified)
@@ -344,7 +377,10 @@ def subject2rss2(server, board, items, title, lastmodified):
 def board2rss2(server, board, limit, time):
     url = "http://%s/%s/subject.txt" % (server, board)
     uc = get_url(url)
-    items = parse_subject(server, board, uc.content.decode("cp932", "replace"))
+    data = uc.content.decode("cp932", "replace")
+    if data.startswith("<html>"):
+        raise NotFoundError("200 BoardMoved")
+    items = parse_subject(server, board, data)
     items = truncate(items, limit, time)
     title = get_board_title(server, board)
     rss = subject2rss2(server, board, items, title, uc.lastmodified)
@@ -398,27 +434,37 @@ class AIndex(webapp.RequestHandler):
             server = m.group(1)
             board = m.group(2)
             thread = m.group(3)
+            server = get_host_by_board(board)
             if (not re.match(config.filter_server, server)
                     or not re.match(config.filter_board, board)
                     or not re.match(r"^\d+$", thread)):
                 raise Exception("ValidationError", url)
-            server = get_host_by_board(board)
-            rss = thread2atom1(server, board, thread, limit, time)
-            self.response.headers["content-type"] = "application/atom+xml"
-            self.response.out.write(rss)
+            try:
+                rss = thread2atom1(server, board, thread, limit, time)
+            except NotFoundError, e:
+                self.response.set_status(404)
+                self.response.out.write(e)
+            else:
+                self.response.headers["content-type"] = "application/atom+xml"
+                self.response.out.write(rss)
             return
 
         m = re.match(r"http://([^/]+)/(\w+)/", url)
         if m:
             server = m.group(1)
             board = m.group(2)
+            server = get_host_by_board(board)
             if (not re.match(config.filter_server, server)
                     or not re.match(config.filter_board, board)):
                 raise Exception("ValidationError", url)
-            server = get_host_by_board(board)
-            rss = board2atom1(server, board, limit, time)
-            self.response.headers["content-type"] = "application/atom+xml"
-            self.response.out.write(rss)
+            try:
+                rss = board2atom1(server, board, limit, time)
+            except NotFoundError, e:
+                self.response.set_status(404)
+                self.response.out.write(e)
+            else:
+                self.response.headers["content-type"] = "application/atom+xml"
+                self.response.out.write(rss)
             return
 
         raise Exception("ValidationError", url)
