@@ -107,10 +107,11 @@ def parse_menu(data):
     @return [[host, board, title], ...]
     """
     board_list = []
+    mx = re.compile(r"""
+        ^<A[ ]HREF=http://([^.]+\.2ch\.net)/([^/]+)/[^>]*>(.*)</A>(?:<br>)?$
+        """, re.VERBOSE | re.IGNORECASE)
     for line in data.splitlines():
-        m = re.match(
-            r"^<A HREF=http://([^.]+\.2ch\.net)/([^/]+)/[^>]*>(.*)</A><br>$",
-            line)
+        m = mx.match(line)
         if m:
             board_list.append([m.group(1), m.group(2), m.group(3)])
     return board_list
